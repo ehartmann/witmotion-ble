@@ -62,4 +62,17 @@ class ShotTraceViewTest {
         val trace = ShotTraceView.samplesToTrace(emptyList(), emptyList())
         assertThat(trace).isEmpty()
     }
+
+    @Test
+    fun `yaw stays continuous when the heading crosses 180 degrees`() {
+        val yaws = listOf(179.5f, -179.5f, 179.8f, -179.9f, 179.9f)
+        val samples = yaws.mapIndexed { i, yaw ->
+            ImuSample(timestamp = i * 20L, euler = floatArrayOf(0f, 0f, yaw))
+        }
+        val hold = listOf(BowMovementAnalyzer.PhaseSegment(ShotPhase.HOLD, 0, samples.size - 1))
+
+        val trace = ShotTraceView.samplesToTrace(samples, hold)
+
+        assertThat(trace.maxOf { kotlin.math.abs(it.yaw) }).isLessThan(1f)
+    }
 }

@@ -183,7 +183,11 @@ class ShotTraceView @JvmOverloads constructor(
 
             // Find hold center (reference point for relative movement)
             val holdSamples = samples.filterIndexed { i, _ -> phaseMap[i] == ShotPhase.HOLD.ordinal }
-            val refYaw = holdSamples.mapNotNull { it.euler?.get(2) }.average().toFloat()
+            // Yaw wraps at ±180°: measure it as the shortest angle from a hold sample, so a heading
+            // near south does not split the trace into +180° and -180° halves.
+            val yawAnchor = (holdSamples + samples).firstNotNullOfOrNull { it.euler?.get(2) } ?: 0f
+            fun yawFromAnchor(yaw: Float) = (yaw - yawAnchor + 540f) % 360f - 180f
+            val refYaw = holdSamples.mapNotNull { it.euler?.get(2)?.let(::yawFromAnchor) }.average().toFloat()
                 .let { if (it.isNaN()) 0f else it }
             val refPitch = holdSamples.mapNotNull { it.euler?.get(1) }.average().toFloat()
                 .let { if (it.isNaN()) 0f else it }
@@ -191,7 +195,7 @@ class ShotTraceView @JvmOverloads constructor(
             return samples.mapIndexed { i, sample ->
                 val euler = sample.euler
                 TracePoint(
-                    yaw = (euler?.get(2) ?: 0f) - refYaw,
+                    yaw = (euler?.get(2)?.let(::yawFromAnchor) ?: 0f) - refYaw,
                     pitch = (euler?.get(1) ?: 0f) - refPitch,
                     phase = ShotPhase.entries[phaseMap[i]]
                 )
