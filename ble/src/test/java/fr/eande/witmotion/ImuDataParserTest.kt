@@ -212,4 +212,29 @@ class ImuDataParserTest {
         assertThat(packets).isEmpty()
         assertThat(counts).isEqualTo(ImuDataParser.FrameCounts(combined = 0, legacy = 0, skippedBytes = 11))
     }
+
+    @Test
+    fun `decodes a 55 71 register reply (protocol example, magnetic field)`() {
+        // Example from the WT9011DCL-BT50 protocol section 2.8: x = 0x0168 = 360 -> 2.4 uT
+        val reply = byteArrayOf(0x55, 0x71, 0x3A, 0x00, 0x68, 0x01, 0x69, 0x00, 0x7A, 0x00) + ByteArray(10)
+
+        val parsed = ImuDataParser.parseCounting(reply)
+
+        assertThat(parsed.packets).isEmpty()
+        assertThat(parsed.registers).containsExactly(
+            ImuDataParser.RegisterReply(0x3A, listOf(360, 105, 122, 0, 0, 0, 0, 0))
+        )
+        assertThat(parsed.counts.skippedBytes).isEqualTo(0)
+    }
+
+    @Test
+    fun `battery percentage follows the protocol voltage table`() {
+        val cases = mapOf(
+            420 to 100, 397 to 100, 396 to 90, 393 to 90, 392 to 75, 387 to 75, 383 to 60,
+            380 to 50, 378 to 40, 375 to 30, 371 to 20, 369 to 15, 360 to 10, 345 to 5, 339 to 0
+        )
+        cases.forEach { (centivolts, percent) ->
+            assertThat(ImuDataParser.batteryPercent(centivolts)).isEqualTo(percent)
+        }
+    }
 }

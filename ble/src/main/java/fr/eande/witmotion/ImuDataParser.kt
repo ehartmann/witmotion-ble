@@ -18,6 +18,9 @@ object ImuDataParser {
     const val COMBINED_PACKET_SIZE = 20
     const val HEADER = 0x55.toByte()
     const val TYPE_COMBINED = 0x61.toByte()
+    /** 55 71 reply to a register read (FF AA 27 reg 00): start register + 8 register values, no checksum. */
+    const val TYPE_REGISTERS = 0x71.toByte()
+    const val REG_BATTERY_VOLTAGE = 0x64
 
     const val TYPE_ACCELERATION = 0x51.toByte()
     const val TYPE_GYROSCOPE = 0x52.toByte()
@@ -44,17 +47,27 @@ object ImuDataParser {
      * Parse all valid packets from a BLE notification byte array.
      * Returns a list of typed parsed packets.
      */
-    fun parse(data: ByteArray): List<ParsedPacket> = parseCounting(data).first
+    fun parse(data: ByteArray): List<ParsedPacket> = parseCounting(data).packets
 
     /** Frames found in one notification, for link diagnostics. */
     data class FrameCounts(val combined: Int, val legacy: Int, val skippedBytes: Int)
+
+    /** A register-read reply: [values] are the 8 unsigned 16-bit registers from [startRegister] on. */
+    data class RegisterReply(val startRegister: Int, val values: List<Int>)
+
+    data class Parsed(
+        val packets: List<ParsedPacket>,
+        val counts: FrameCounts,
+        val registers: List<RegisterReply> = emptyList()
+    )
 
     /**
      * Like [parse], and counts the frames per format and the bytes that were not part of a
      * valid frame (garbage, bad checksum, or a frame cut by the end of the notification).
      */
-    fun parseCounting(data: ByteArray): Pair<List<ParsedPacket>, FrameCounts> {
+    fun parseCounting(data: ByteArray): Parsed {
         val packets = mutableListOf<ParsedPacket>()
+        val registers = mutableListOf<RegisterReply>()
         var offset = 0
         var combined = 0
         var legacy = 0
@@ -73,6 +86,12 @@ object ImuDataParser {
                 packets.add(ParsedPacket(TYPE_EULER, parseEuler(data, offset + 12)))
                 offset += COMBINED_PACKET_SIZE
                 combined++
+                continue
+            }
+
+            if (data[offset + 1] == TYPE_REGISTERS && offset + COMBINED_PACKET_SIZE <= data.size) {
+                registers.add(RegisterReply(readUInt16(data, offset + 2), List(8) { readUInt16(data, offset + 4 + it * 2) }))
+                offset += COMBINED_PACKET_SIZE
                 continue
             }
 
@@ -101,7 +120,26 @@ object ImuDataParser {
         }
 
         skipped += data.size - offset
-        return packets to FrameCounts(combined, legacy, skipped)
+        return Parsed(packets, FrameCounts(combined, legacy, skipped), registers)
+    }
+
+    /**
+     * Battery percentage from register 0x64 (voltage in 0.01 V), per the voltage table of the
+     * WT9011DCL-BT50 communication protocol (v25-04-06, section 3.10).
+     */
+    fun batteryPercent(centivolts: Int): Int = when {
+        centivolts > 396 -> 100
+        centivolts >= 393 -> 90
+        centivolts >= 387 -> 75
+        centivolts >= 382 -> 60
+        centivolts >= 379 -> 50
+        centivolts >= 377 -> 40
+        centivolts >= 373 -> 30
+        centivolts >= 370 -> 20
+        centivolts >= 368 -> 15
+        centivolts >= 350 -> 10
+        centivolts >= 340 -> 5
+        else -> 0
     }
 
     /**
@@ -177,6 +215,8 @@ object ImuDataParser {
     /**
      * Read a signed 16-bit little-endian integer from the byte array.
      */
+    fun readUInt16(data: ByteArray, offset: Int): Int = readInt16(data, offset).toInt() and 0xFFFF
+
     fun readInt16(data: ByteArray, offset: Int): Short {
         val low = data[offset].toInt() and 0xFF
         val high = data[offset + 1].toInt() and 0xFF

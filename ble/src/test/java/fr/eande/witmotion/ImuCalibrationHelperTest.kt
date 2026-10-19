@@ -15,4 +15,11 @@ class ImuCalibrationHelperTest {
         assertThat(hex(ImuCalibrationHelper.CAL_EXIT)).isEqualTo("FF AA 01 00 00")
         assertThat(hex(ImuSensorManager.SAVE_CONFIG)).isEqualTo("FF AA 00 00 00")
     }
+
+    @Test
+    fun `config and register-read commands match the protocol`() {
+        assertThat(hex(ImuSensorManager.UNLOCK)).isEqualTo("FF AA 69 88 B5")
+        assertThat(hex(ImuSensorManager.SET_RATE_50HZ)).isEqualTo("FF AA 03 08 00")
+        assertThat(hex(ImuSensorManager.READ_BATTERY)).isEqualTo("FF AA 27 64 00")
+    }
 }

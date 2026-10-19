@@ -52,17 +52,19 @@ class ImuSensorManager(private val context: Context) {
         val NOTIFY_CHAR_UUID: UUID = UUID.fromString("0000FFE4-0000-1000-8000-00805F9A34FB")
         val WRITE_CHAR_UUID: UUID = UUID.fromString("0000FFE9-0000-1000-8000-00805F9A34FB")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-        val BATTERY_SERVICE_UUID: UUID = UUID.fromString("0000180F-0000-1000-8000-00805F9B34FB")
-        val BATTERY_LEVEL_UUID: UUID = UUID.fromString("00002A19-0000-1000-8000-00805F9B34FB")
 
         private const val SCAN_TIMEOUT_MS = 10_000L
         private const val BATTERY_REFRESH_MS = 60_000L
+        // WitMotion's SDK waits 100 ms after the unlock and after each config write
+        private const val COMMAND_SPACING_MS = 100L
 
         // WitMotion device-config commands: [0xFF] [0xAA] [RegAddr] [DataL] [DataH].
         // Register 0x03 is the output rate (0x08 = 50 Hz); 0x69/0xB588 unlocks config writes.
         val UNLOCK = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x69, 0x88.toByte(), 0xB5.toByte())
         val SET_RATE_50HZ = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x03, 0x08, 0x00)
         val SAVE_CONFIG = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x00, 0x00)
+        // Register read (no unlock needed): the sensor answers with a 55 71 notification
+        val READ_BATTERY = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, ImuDataParser.REG_BATTERY_VOLTAGE.toByte(), 0x00)
     }
 
     // State
@@ -375,17 +377,6 @@ class ImuSensorManager(private val context: Context) {
             Log.d(TAG, "Connected to ${gatt.device.name}")
         }
 
-        @Deprecated("Deprecated in API 33+, kept for backward compatibility with minSdk 26")
-        @Suppress("DEPRECATION")
-        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == BATTERY_LEVEL_UUID) {
-                val level = characteristic.value?.firstOrNull()?.toInt()?.and(0xFF) ?: -1
-                _batteryLevel.value = level
-                Log.d(TAG, "Battery level: $level%")
-            }
-            gattOps.next(gatt)
-        }
-
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             Log.d(TAG, "Notifications enabled (status=$status)")
             gattOps.next(gatt)
@@ -413,7 +404,11 @@ class ImuSensorManager(private val context: Context) {
         }
 
         private fun deliverNotify(data: ByteArray) {
-            val (packets, counts) = ImuDataParser.parseCounting(data)
+            val (packets, counts, registers) = ImuDataParser.parseCounting(data)
+            registers.firstOrNull { it.startRegister == ImuDataParser.REG_BATTERY_VOLTAGE }?.let {
+                _batteryLevel.value = ImuDataParser.batteryPercent(it.values[0])
+                Log.d(TAG, "Battery: ${it.values[0] / 100f} V, ${_batteryLevel.value}%")
+            }
             _linkStats.update {
                 it.copy(
                     notifications = it.notifications + 1,
@@ -436,16 +431,24 @@ class ImuSensorManager(private val context: Context) {
      * Queues WitMotion `FF AA reg L H` commands, preceded by the config unlock. Writes run one
      * at a time; a command sent while disconnected is dropped.
      */
-    fun sendCommands(vararg commands: ByteArray) {
+    fun sendCommands(vararg commands: ByteArray) = enqueuePaced(listOf(UNLOCK) + commands)
+
+    /** Writes [commands] one at a time, [COMMAND_SPACING_MS] apart. */
+    private fun enqueuePaced(commands: List<ByteArray>) {
         val g = gatt ?: return
-        for (command in listOf(UNLOCK) + commands) gattOps.enqueue(g) { sendCommand(command) }
+        commands.forEachIndexed { i, command ->
+            if (i > 0) {
+                gattOps.enqueue(g) {
+                    mainHandler.postDelayed({ if (gatt === g) gattOps.next(g) }, COMMAND_SPACING_MS)
+                    true
+                }
+            }
+            gattOps.enqueue(g) { sendCommand(command) }
+        }
     }
 
-    private fun readBattery() {
-        val g = gatt ?: return
-        val battery = g.getService(BATTERY_SERVICE_UUID)?.getCharacteristic(BATTERY_LEVEL_UUID) ?: return
-        gattOps.enqueue(g) { it.readCharacteristic(battery) }
-    }
+    /** The WT9011DCL has no GATT Battery Service: the level comes from register 0x64 (see deliverNotify). */
+    private fun readBattery() = enqueuePaced(listOf(READ_BATTERY))
 
     /** Sets 50 Hz output. Called automatically on connect; not saved to the sensor's flash. */
     fun configureRate() = sendCommands(SET_RATE_50HZ)
