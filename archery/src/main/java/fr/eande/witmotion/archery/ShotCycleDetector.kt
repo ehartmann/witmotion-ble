@@ -5,9 +5,10 @@ import fr.eande.witmotion.ImuSample
 /**
  * Detects individual shot cycles from a stream of IMU samples.
  *
- * A shot runs from the start of the draw to [afterReleaseMs] after the release (a typical shot:
- * about 6 s of draw and aim, then 3 s of follow-through), and is emitted as soon as that
- * follow-through time has elapsed. [BowMovementAnalyzer] finds the phases
+ * A shot runs from the start of the last draw before the release (earlier draw/hold back and forth,
+ * handling the bow, is left out) to [afterReleaseMs] after the release (a typical shot: about 6 s
+ * of draw and aim, then 3 s of follow-through), and is emitted as soon as that follow-through
+ * time has elapsed. [BowMovementAnalyzer] finds the phases
  * (DRAW -> HOLD -> RELEASE -> FOLLOW_THROUGH) over the buffered samples.
  *
  * All limits are durations, so the behaviour does not depend on the sensor rate. While no draw is
@@ -74,7 +75,9 @@ class ShotCycleDetector(
             return
         }
         releaseSeen = true
-        if (sample.timestamp - buffer[release.startIndex].timestamp >= afterReleaseMs) emitShot(start)
+        if (sample.timestamp - buffer[release.startIndex].timestamp >= afterReleaseMs) {
+            emitShot(lastDrawStart(phases, release) ?: start)
+        }
     }
 
     /**
@@ -83,7 +86,17 @@ class ShotCycleDetector(
      */
     fun flush() = synchronized(lock) {
         val start = shotStartIndex
-        if (start != null && releaseSeen) emitShot(start) else reset()
+        if (start == null || !releaseSeen) return@synchronized reset()
+        val phases = analyzer.detectPhases(buffer)
+        val release = phases.firstOrNull { it.phase == ShotPhase.RELEASE && it.startIndex >= start }
+        emitShot(release?.let { lastDrawStart(phases, it) } ?: start)
+    }
+
+    /** Start of the DRAW segment right before the HOLD that ends with [release]. */
+    private fun lastDrawStart(phases: List<BowMovementAnalyzer.PhaseSegment>, release: BowMovementAnalyzer.PhaseSegment): Int? {
+        val r = phases.indexOf(release)
+        val hold = phases.getOrNull(r - 1)?.takeIf { it.phase == ShotPhase.HOLD } ?: return null
+        return phases.getOrNull(phases.indexOf(hold) - 1)?.takeIf { it.phase == ShotPhase.DRAW }?.startIndex
     }
 
     private fun emitShot(start: Int) {

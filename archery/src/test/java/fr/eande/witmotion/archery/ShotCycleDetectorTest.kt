@@ -89,6 +89,18 @@ class ShotCycleDetectorTest {
     }
 
     @Test
+    fun `a shot starts at the last draw, earlier bow handling left out`() {
+        val detector = detector()
+        detector.feed(200, 30f)                            // draw, let down
+        detector.feed(400, 1f)
+        val lastDrawAt = t
+        detector.shot()
+
+        assertThat(detectedShots).hasSize(1)
+        assertThat(detectedShots[0].samples.first().timestamp).isEqualTo(lastDrawAt)
+    }
+
+    @Test
     fun `no shot without a release`() {
         val detector = detector()
         detector.feed(100, 0f)
