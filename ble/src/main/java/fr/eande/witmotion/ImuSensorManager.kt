@@ -302,7 +302,9 @@ class ImuSensorManager(private val context: Context) {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    Log.d(TAG, "Connected, discovering services...")
+                    // The default connection interval (about 30 ms) caps the link below the sensor's 50 Hz
+                    val fast = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    Log.d(TAG, "Connected (high priority requested: $fast), discovering services...")
                     gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
