@@ -2,6 +2,10 @@ package fr.eande.witmotion
 
 /**
  * A single timestamped IMU reading from the WT9011DCL sensor.
+ *
+ * [timestamp] is in ms on the monotonic [android.os.SystemClock.elapsedRealtime] clock (relative
+ * to the last ImuSensorManager.resetRecordingTimestamp call, if any): unlike the wall clock it
+ * never jumps when the phone adjusts its time, so differences between samples stay valid.
  */
 data class ImuSample(
     val timestamp: Long,

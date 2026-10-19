@@ -5,6 +5,7 @@ import androidx.annotation.RequiresApi
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
@@ -401,7 +402,7 @@ class ImuSensorManager(private val context: Context) {
         private fun deliverNotify(data: ByteArray) {
             val packets = ImuDataParser.parse(data)
             if (packets.isNotEmpty()) {
-                val sample = ImuDataParser.packetsToSample(packets, System.currentTimeMillis() - recordingStartTime)
+                val sample = ImuDataParser.packetsToSample(packets, SystemClock.elapsedRealtime() - recordingStartTime)
                 _lastSample.value = sample
                 sampleListeners.forEach { it(sample) }
             }
@@ -428,9 +429,12 @@ class ImuSensorManager(private val context: Context) {
     /** Sets 50 Hz output. Called automatically on connect; not saved to the sensor's flash. */
     fun configureRate() = sendCommands(SET_RATE_50HZ)
 
-    /** Makes [ImuSample.timestamp] relative to now; until called, timestamps are epoch ms. */
+    /**
+     * Makes [ImuSample.timestamp] relative to now; until called, timestamps are
+     * [SystemClock.elapsedRealtime] values (ms since boot).
+     */
     fun resetRecordingTimestamp() {
-        recordingStartTime = System.currentTimeMillis()
+        recordingStartTime = SystemClock.elapsedRealtime()
     }
 
     /** Returns whether the write was started; its completion arrives in onCharacteristicWrite. */
