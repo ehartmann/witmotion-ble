@@ -191,7 +191,7 @@ class ShotCycleDetectorTest {
         }
 
         val shots = ShotCycleDetector.detectAll(
-            recording,
+            recording.asSequence(),
             BowMovementAnalyzer(minHoldMs = 100, followThroughMs = 200)
         )
 
@@ -202,6 +202,6 @@ class ShotCycleDetectorTest {
     @Test
     fun `detectAll on a recording without a shot returns nothing`() {
         val idle = List(100) { sample(it * 20L) }
-        assertThat(ShotCycleDetector.detectAll(idle)).isEmpty()
+        assertThat(ShotCycleDetector.detectAll(idle.asSequence())).isEmpty()
     }
 }

@@ -31,9 +31,12 @@ class ShotCycleDetector(
     )
 
     companion object {
-        /** Runs detection over a finished recording, including a shot cut short by its end. */
+        /**
+         * Runs detection over a finished recording, including a shot cut short by its end.
+         * A Sequence lets callers stream a long recording instead of loading it whole.
+         */
         fun detectAll(
-            samples: List<ImuSample>,
+            samples: Sequence<ImuSample>,
             analyzer: BowMovementAnalyzer = BowMovementAnalyzer()
         ): List<DetectedShot> {
             val shots = mutableListOf<DetectedShot>()
