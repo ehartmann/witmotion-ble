@@ -4,18 +4,17 @@ on:
   push:
     tags: [ 'v*' ]
 
+# Only the release job can write, and it runs no third-party action
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Check the tag is vMAJOR.MINOR.PATCH
         run: '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Tag $GITHUB_REF_NAME is not vX.Y.Z"; exit 1; }'
@@ -27,10 +26,33 @@ jobs:
           distribution: 'temurin'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
 
       - name: Test and build the release artifacts
         run: ./gradlew testDebugUnitTest publishAllPublicationsToReleaseRepository -PlibVersion="${GITHUB_REF_NAME#v}" --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-repo
+          path: build/release-repo/
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-repo
+          path: release-repo
 
       - name: Create the GitHub Release with the artifacts
         env:
@@ -38,4 +60,4 @@ jobs:
         run: |
           previous=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
           { echo "## Changes"; echo; git log --format='- %s (%h)' "${previous:+$previous..}$GITHUB_REF_NAME"; } > notes.md
-          gh release create "$GITHUB_REF_NAME" build/release-repo/* --title "$GITHUB_REF_NAME" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" release-repo/* --title "$GITHUB_REF_NAME" --notes-file notes.md
