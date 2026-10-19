@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -76,6 +77,17 @@ class ImuSensorManager(private val context: Context) {
 
     private val _batteryLevel = MutableStateFlow(-1) // -1 = unknown
     val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
+
+    /** Totals since the last connect: which frame format arrives, and how much of the stream is not usable. */
+    data class LinkStats(
+        val notifications: Long = 0,
+        val combinedFrames: Long = 0,
+        val legacyFrames: Long = 0,
+        val skippedBytes: Long = 0
+    )
+
+    private val _linkStats = MutableStateFlow(LinkStats())
+    val linkStats: StateFlow<LinkStats> = _linkStats.asStateFlow()
 
     private val _lastSample = MutableStateFlow<ImuSample?>(null)
     /** Most recent parsed IMU sample. Observe for live display. */
@@ -332,6 +344,7 @@ class ImuSensorManager(private val context: Context) {
             }
 
             writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID)
+            _linkStats.value = LinkStats()
 
             gattOps.clear()
             service.getCharacteristic(NOTIFY_CHAR_UUID)?.let { notifyChar ->
@@ -400,7 +413,15 @@ class ImuSensorManager(private val context: Context) {
         }
 
         private fun deliverNotify(data: ByteArray) {
-            val packets = ImuDataParser.parse(data)
+            val (packets, counts) = ImuDataParser.parseCounting(data)
+            _linkStats.update {
+                it.copy(
+                    notifications = it.notifications + 1,
+                    combinedFrames = it.combinedFrames + counts.combined,
+                    legacyFrames = it.legacyFrames + counts.legacy,
+                    skippedBytes = it.skippedBytes + counts.skippedBytes
+                )
+            }
             if (packets.isNotEmpty()) {
                 val sample = ImuDataParser.packetsToSample(packets, SystemClock.elapsedRealtime() - recordingStartTime)
                 _lastSample.value = sample

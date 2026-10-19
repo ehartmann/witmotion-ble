@@ -44,13 +44,26 @@ object ImuDataParser {
      * Parse all valid packets from a BLE notification byte array.
      * Returns a list of typed parsed packets.
      */
-    fun parse(data: ByteArray): List<ParsedPacket> {
+    fun parse(data: ByteArray): List<ParsedPacket> = parseCounting(data).first
+
+    /** Frames found in one notification, for link diagnostics. */
+    data class FrameCounts(val combined: Int, val legacy: Int, val skippedBytes: Int)
+
+    /**
+     * Like [parse], and counts the frames per format and the bytes that were not part of a
+     * valid frame (garbage, bad checksum, or a frame cut by the end of the notification).
+     */
+    fun parseCounting(data: ByteArray): Pair<List<ParsedPacket>, FrameCounts> {
         val packets = mutableListOf<ParsedPacket>()
         var offset = 0
+        var combined = 0
+        var legacy = 0
+        var skipped = 0
 
         while (offset + PACKET_SIZE <= data.size) {
             if (data[offset] != HEADER) {
                 offset++
+                skipped++
                 continue
             }
 
@@ -59,13 +72,16 @@ object ImuDataParser {
                 packets.add(ParsedPacket(TYPE_GYROSCOPE, parseGyroscope(data, offset + 6)))
                 packets.add(ParsedPacket(TYPE_EULER, parseEuler(data, offset + 12)))
                 offset += COMBINED_PACKET_SIZE
+                combined++
                 continue
             }
 
             if (!verifyChecksum(data, offset)) {
                 offset++
+                skipped++
                 continue
             }
+            legacy++
 
             val type = data[offset + 1]
             val values = when (type) {
@@ -84,7 +100,8 @@ object ImuDataParser {
             offset += PACKET_SIZE
         }
 
-        return packets
+        skipped += data.size - offset
+        return packets to FrameCounts(combined, legacy, skipped)
     }
 
     /**

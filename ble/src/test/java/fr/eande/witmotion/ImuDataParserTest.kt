@@ -184,4 +184,32 @@ class ImuDataParserTest {
         val packet = buildCombinedPacket(0, 0, 16384).copyOf(15)
         assertThat(ImuDataParser.parse(packet)).isEmpty()
     }
+
+    @Test
+    fun `counts a BLE 5 combined frame`() {
+        val (_, counts) = ImuDataParser.parseCounting(buildCombinedPacket(0, 0, 16384))
+        assertThat(counts).isEqualTo(ImuDataParser.FrameCounts(combined = 1, legacy = 0, skippedBytes = 0))
+    }
+
+    @Test
+    fun `counts legacy frames, leading garbage and a frame cut by the notification end`() {
+        val accel = buildPacket(ImuDataParser.TYPE_ACCELERATION, 0, 0, 0)
+        val euler = buildPacket(ImuDataParser.TYPE_EULER, 0, 0, 0)
+        val data = byteArrayOf(1, 2, 3) + accel + euler + euler.copyOf(5)
+
+        val (packets, counts) = ImuDataParser.parseCounting(data)
+
+        assertThat(packets).hasSize(2)
+        assertThat(counts).isEqualTo(ImuDataParser.FrameCounts(combined = 0, legacy = 2, skippedBytes = 3 + 5))
+    }
+
+    @Test
+    fun `a frame with a bad checksum counts as skipped bytes`() {
+        val bad = buildPacket(ImuDataParser.TYPE_EULER, 1, 2, 3).also { it[10] = (it[10] + 1).toByte() }
+
+        val (packets, counts) = ImuDataParser.parseCounting(bad)
+
+        assertThat(packets).isEmpty()
+        assertThat(counts).isEqualTo(ImuDataParser.FrameCounts(combined = 0, legacy = 0, skippedBytes = 11))
+    }
 }
