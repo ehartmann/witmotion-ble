@@ -186,7 +186,7 @@ class ShotTraceView @JvmOverloads constructor(
             // Yaw wraps at ±180°: measure it as the shortest angle from a hold sample, so a heading
             // near south does not split the trace into +180° and -180° halves.
             val yawAnchor = (holdSamples + samples).firstNotNullOfOrNull { it.euler?.get(2) } ?: 0f
-            fun yawFromAnchor(yaw: Float) = (yaw - yawAnchor + 540f) % 360f - 180f
+            fun yawFromAnchor(yaw: Float) = wrapDegrees(yaw - yawAnchor)
             val refYaw = holdSamples.mapNotNull { it.euler?.get(2)?.let(::yawFromAnchor) }.average().toFloat()
                 .let { if (it.isNaN()) 0f else it }
             val refPitch = holdSamples.mapNotNull { it.euler?.get(1) }.average().toFloat()
