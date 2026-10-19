@@ -15,9 +15,10 @@ class ImuCalibrationHelper(private val sensorManager: ImuSensorManager) {
     companion object {
         private const val TAG = "ImuCalibration"
 
-        // Register 0x01 (CALSW): 1 = accelerometer, 2 = magnetometer, 0 = exit calibration
+        // Register 0x01 (CALSW), per the WT9011DCL-BT50 protocol v25-04-06 section 3.2:
+        // 1 = accelerometer, 7 = magnetic field, 0 = end calibration
         val ACCEL_CAL_START = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x01, 0x01, 0x00)
-        val MAG_CAL_START = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x01, 0x02, 0x00)
+        val MAG_CAL_START = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x01, 0x07, 0x00)
         val CAL_EXIT = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x01, 0x00, 0x00)
     }
 
