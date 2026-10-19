@@ -30,6 +30,20 @@ class ShotCycleDetector(
         val metrics: BowMovementMetrics?
     )
 
+    companion object {
+        /** Runs detection over a finished recording, including a shot cut short by its end. */
+        fun detectAll(
+            samples: List<ImuSample>,
+            analyzer: BowMovementAnalyzer = BowMovementAnalyzer()
+        ): List<DetectedShot> {
+            val shots = mutableListOf<DetectedShot>()
+            val detector = ShotCycleDetector(analyzer = analyzer) { shots += it }
+            samples.forEach(detector::onSample)
+            detector.flush()
+            return shots
+        }
+    }
+
     private val lock = Any()
     private val buffer = mutableListOf<ImuSample>()
     private var shotStartIndex: Int? = null

@@ -172,4 +172,36 @@ class ShotCycleDetectorTest {
         // No shot from the stuck draw, but the valid shot should be detected
         assertThat(detectedShots).hasSize(1)
     }
+
+    @Test
+    fun `detectAll finds every shot of a finished recording`() {
+        val recording = mutableListOf<ImuSample>()
+        var t = 0L
+        fun add(count: Int, gyro: Float, accel: FloatArray = floatArrayOf(0f, 0f, 1f)) = repeat(count) {
+            recording += sample(t, gyro = floatArrayOf(gyro, 0f, 0f), accel = accel, euler = floatArrayOf(2f, 0f, 0f))
+            t += 20
+        }
+        repeat(2) { shot ->
+            add(5, 0f)                                     // idle
+            add(10, 30f)                                   // draw
+            add(20, 1f)                                    // hold
+            add(1, 1f, accel = floatArrayOf(5f, 2f, 3f))   // release
+            add(15, 2f)                                    // follow-through
+            if (shot == 0) add(12, 0f)                     // back to idle; shot 2 is cut by the end
+        }
+
+        val shots = ShotCycleDetector.detectAll(
+            recording,
+            BowMovementAnalyzer(minHoldMs = 100, followThroughMs = 200)
+        )
+
+        assertThat(shots).hasSize(2)
+        assertThat(shots.map { it.metrics }).doesNotContain(null)
+    }
+
+    @Test
+    fun `detectAll on a recording without a shot returns nothing`() {
+        val idle = List(100) { sample(it * 20L) }
+        assertThat(ShotCycleDetector.detectAll(idle)).isEmpty()
+    }
 }
