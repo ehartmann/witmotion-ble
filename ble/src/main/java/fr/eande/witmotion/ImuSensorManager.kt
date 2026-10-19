@@ -55,6 +55,7 @@ class ImuSensorManager(private val context: Context) {
 
         private const val SCAN_TIMEOUT_MS = 10_000L
         private const val BATTERY_REFRESH_MS = 60_000L
+        private const val DISCOVERY_RETRY_MS = 500L
         // WitMotion's SDK waits 100 ms after the unlock and after each config write
         private const val COMMAND_SPACING_MS = 100L
 
@@ -109,6 +110,7 @@ class ImuSensorManager(private val context: Context) {
     @Volatile private var userInitiatedDisconnect = false
     private val gattOps = GattOpQueue()
     @Volatile private var recordingStartTime = 0L
+    @Volatile private var discoveryRetried = false
     private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScan() }
@@ -302,9 +304,8 @@ class ImuSensorManager(private val context: Context) {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    // The default connection interval (about 30 ms) caps the link below the sensor's 50 Hz
-                    val fast = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                    Log.d(TAG, "Connected (high priority requested: $fast), discovering services...")
+                    Log.d(TAG, "Connected, discovering services...")
+                    discoveryRetried = false
                     gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -342,10 +343,23 @@ class ImuSensorManager(private val context: Context) {
 
             val service = gatt.getService(SERVICE_UUID)
             if (service == null) {
-                Log.e(TAG, "IMU service not found")
-                disconnect()
+                // A first discovery right after connecting can come back empty (seen on a Galaxy
+                // S22): retry once, then drop the link as unexpected so ImuAutoConnector reconnects
+                if (!discoveryRetried) {
+                    discoveryRetried = true
+                    Log.w(TAG, "IMU service not found, retrying discovery")
+                    mainHandler.postDelayed({ gatt.discoverServices() }, DISCOVERY_RETRY_MS)
+                } else {
+                    Log.e(TAG, "IMU service not found")
+                    gatt.disconnect()
+                }
                 return
             }
+
+            // The default connection interval (about 30 ms) caps the link below the sensor's 50 Hz;
+            // asked once discovery is done, as a request racing the discovery is not always honored
+            val fast = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            Log.d(TAG, "High connection priority requested: $fast")
 
             writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID)
             _linkStats.value = LinkStats()
