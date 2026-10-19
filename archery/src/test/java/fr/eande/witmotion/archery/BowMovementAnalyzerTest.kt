@@ -83,6 +83,33 @@ class BowMovementAnalyzerTest {
     }
 
     @Test
+    fun `release detected when the gyro reacts a sample before the acceleration spike`() {
+        // Seen on a WT9011DCL at ~25 Hz: the bow starts turning one sample before the accel jump
+        val draw = (0L..5L).map { sample(it * 40, gyro = floatArrayOf(25f, 0f, 0f)) }
+        val hold = (6L..12L).map { sample(it * 40, gyro = floatArrayOf(1f, 0f, 0f)) }
+        val gyroFirst = sample(520, gyro = floatArrayOf(40f, 0f, 0f))
+        val spike = sample(560, gyro = floatArrayOf(60f, 0f, 0f), accel = floatArrayOf(3f, 0f, 1f))
+        val after = (15L..25L).map { sample(it * 40, gyro = floatArrayOf(2f, 0f, 0f)) }
+
+        val phases = analyzer.detectPhases(draw + hold + gyroFirst + spike + after)
+
+        assertThat(phases.map { it.phase }).containsAtLeast(ShotPhase.DRAW, ShotPhase.HOLD, ShotPhase.RELEASE).inOrder()
+        assertThat(phases.single { it.phase == ShotPhase.RELEASE }.startIndex).isEqualTo(13)
+    }
+
+    @Test
+    fun `gyro rising out of the hold without a spike is a new draw, not a release`() {
+        val draw = (0L..5L).map { sample(it * 40, gyro = floatArrayOf(25f, 0f, 0f)) }
+        val hold = (6L..12L).map { sample(it * 40, gyro = floatArrayOf(1f, 0f, 0f)) }
+        val redraw = (13L..20L).map { sample(it * 40, gyro = floatArrayOf(30f, 0f, 0f)) }
+
+        val phases = analyzer.detectPhases(draw + hold + redraw)
+
+        assertThat(phases.map { it.phase }).doesNotContain(ShotPhase.RELEASE)
+        assertThat(phases.last().phase).isEqualTo(ShotPhase.DRAW)
+    }
+
+    @Test
     fun `acceleration spike before minHoldMs does not trigger release`() {
         // Draw, then a momentary settle immediately followed by a jolt only 20 ms
         // into the hold (minHoldMs = 100) — must be ignored, not read as a release.

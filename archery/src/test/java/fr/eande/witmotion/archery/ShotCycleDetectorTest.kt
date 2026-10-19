@@ -77,6 +77,18 @@ class ShotCycleDetectorTest {
     }
 
     @Test
+    fun `a 25 Hz shot whose gyro reacts before the spike is detected`() {
+        val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000)
+        detector.feed(2_000, 30f, stepMs = 40)
+        detector.feed(5_000, 1f, stepMs = 40)
+        detector.onSample(sample(t, 40f)); t += 40         // the bow turns first...
+        detector.release(stepMs = 40)                      // ...then the string jolt
+        detector.feed(3_100, 2f, stepMs = 40)
+
+        assertThat(detectedShots).hasSize(1)
+    }
+
+    @Test
     fun `no shot without a release`() {
         val detector = detector()
         detector.feed(100, 0f)

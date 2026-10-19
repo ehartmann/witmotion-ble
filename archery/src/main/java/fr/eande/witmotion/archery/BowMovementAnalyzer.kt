@@ -24,7 +24,10 @@ class BowMovementAnalyzer(
     private val drawThreshold: Float = 20f,        // °/s — above this = drawing
     private val releaseAccelThreshold: Float = 2f, // g — spike above this = release
     private val minHoldMs: Long = 500,             // minimum hold time to confirm
-    private val followThroughMs: Long = 500        // ms after release
+    private val followThroughMs: Long = 500,       // ms after release
+    // At release the gyro often crosses drawThreshold one or two samples before the accel spike
+    // (seen on the WT9011DCL at ~25 Hz): look this far ahead for the spike before calling it a draw
+    private val releaseWindowMs: Long = 200
 ) {
 
     data class ShotAnalysis(
@@ -88,7 +91,9 @@ class BowMovementAnalyzer(
                     // straight to RELEASE, emitting a bogus shot cycle.
                     val holdConfirmed = holdStartTime != null &&
                         s.timestamp - holdStartTime >= minHoldMs
-                    if (holdConfirmed && accelSpike > releaseAccelThreshold) {
+                    val releaseStarting = accelSpike > releaseAccelThreshold ||
+                        (gyroMag > drawThreshold && spikeWithin(samples, i, releaseWindowMs))
+                    if (holdConfirmed && releaseStarting) {
                         releaseTime = s.timestamp
                         newPhase = ShotPhase.RELEASE
                     } else if (gyroMag > drawThreshold) {
@@ -193,6 +198,17 @@ class BowMovementAnalyzer(
     }
 
     // --- Utilities ---
+
+    /** Whether an acceleration spike happens from sample [from] to [windowMs] after it. */
+    private fun spikeWithin(samples: List<ImuSample>, from: Int, windowMs: Long): Boolean {
+        val start = samples[from].timestamp
+        var j = from
+        while (j < samples.size && samples[j].timestamp - start <= windowMs) {
+            if (accelSpikeMagnitude(samples[j], samples.getOrNull(j - 1)) > releaseAccelThreshold) return true
+            j++
+        }
+        return false
+    }
 
     private fun gyroMagnitude(sample: ImuSample): Float {
         val g = sample.gyroscope ?: return 0f
