@@ -1,28 +1,28 @@
 package fr.eande.witmotion.archery
 
 import fr.eande.witmotion.ImuSample
-import kotlin.math.sqrt
 
 /**
  * Detects individual shot cycles from a stream of IMU samples.
  *
- * Buffers samples, runs BowMovementAnalyzer incrementally, and emits
- * a [DetectedShot] each time a complete cycle (DRAW->HOLD->RELEASE->FOLLOW_THROUGH)
- * is detected followed by return to idle movement.
+ * A shot runs from the start of the draw to [afterReleaseMs] after the release (a typical shot:
+ * about 6 s of draw and aim, then 3 s of follow-through), and is emitted as soon as that
+ * follow-through time has elapsed. [BowMovementAnalyzer] finds the phases
+ * (DRAW -> HOLD -> RELEASE -> FOLLOW_THROUGH) over the buffered samples.
  *
- * Note: [BowMovementAnalyzer.detectPhases] treats FOLLOW_THROUGH as a terminal state
- * (it never transitions back to IDLE). This detector therefore monitors raw gyroscope
- * magnitude after follow-through is reached: once movement drops below [idleGyroThreshold]
- * for [idleConfirmSamples] consecutive samples, the shot is considered complete.
+ * All limits are durations, so the behaviour does not depend on the sensor rate. While no draw is
+ * in progress only the last [idleKeepMs] are kept, which bounds memory and the phase-detection
+ * cost over a long session; a draw that reaches no release within [maxDrawMs] is dropped (stuck
+ * draw, bow handled without shooting).
  *
  * Thread safety: [onSample] and [flush] are synchronized to allow safe calls from
  * BLE callback and main threads respectively.
  */
 class ShotCycleDetector(
     private val analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
-    private val idleGyroThreshold: Float = 5f,
-    private val idleConfirmSamples: Int = 10,
-    private val maxBufferSize: Int = 500,
+    private val afterReleaseMs: Long = 3_000,
+    private val maxDrawMs: Long = 30_000,
+    private val idleKeepMs: Long = 2_000,
     private val onShotDetected: (DetectedShot) -> Unit
 ) {
     data class DetectedShot(
@@ -37,10 +37,11 @@ class ShotCycleDetector(
          */
         fun detectAll(
             samples: Sequence<ImuSample>,
-            analyzer: BowMovementAnalyzer = BowMovementAnalyzer()
+            analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
+            afterReleaseMs: Long = 3_000
         ): List<DetectedShot> {
             val shots = mutableListOf<DetectedShot>()
-            val detector = ShotCycleDetector(analyzer = analyzer) { shots += it }
+            val detector = ShotCycleDetector(analyzer = analyzer, afterReleaseMs = afterReleaseMs) { shots += it }
             samples.forEach(detector::onSample)
             detector.flush()
             return shots
@@ -48,104 +49,52 @@ class ShotCycleDetector(
     }
 
     private val lock = Any()
-    private val buffer = mutableListOf<ImuSample>()
+    private val buffer = ArrayList<ImuSample>()
     private var shotStartIndex: Int? = null
-    private var reachedFollowThrough = false
-    private var consecutiveIdleSamples = 0
+    private var releaseSeen = false
+
+    /** Samples held right now; for tests of the memory bound. */
+    internal val bufferedSamples: Int get() = synchronized(lock) { buffer.size }
 
     fun onSample(sample: ImuSample): Unit = synchronized(lock) {
         buffer.add(sample)
-
-        // Prevent unbounded buffer growth (stuck draw, noisy sensor)
-        if (buffer.size > maxBufferSize && shotStartIndex != null && !reachedFollowThrough) {
-            reset()
-            return
+        if (shotStartIndex == null) {
+            val keepFrom = buffer.indexOfFirst { sample.timestamp - it.timestamp <= idleKeepMs }
+            if (keepFrom > 0) buffer.subList(0, keepFrom).clear()
         }
 
         val phases = analyzer.detectPhases(buffer)
-        if (phases.isEmpty()) return
+        val start = shotStartIndex
+            ?: phases.firstOrNull { it.phase == ShotPhase.DRAW }?.startIndex?.also { shotStartIndex = it }
+            ?: return
 
-        val lastPhase = phases.last().phase
-
-        // Track shot start on first DRAW
-        if (shotStartIndex == null && lastPhase == ShotPhase.DRAW) {
-            shotStartIndex = phases.last().startIndex
+        val release = phases.firstOrNull { it.phase == ShotPhase.RELEASE && it.startIndex >= start }
+        if (release == null) {
+            if (sample.timestamp - buffer[start].timestamp > maxDrawMs) reset()
+            return
         }
-
-        // Track follow-through
-        if (shotStartIndex != null && lastPhase == ShotPhase.FOLLOW_THROUGH && !reachedFollowThrough) {
-            reachedFollowThrough = true
-        }
-
-        // After follow-through, check for return to idle via raw gyro magnitude
-        if (reachedFollowThrough) {
-            val gyroMag = gyroMagnitude(sample)
-            if (gyroMag < idleGyroThreshold) {
-                consecutiveIdleSamples++
-            } else {
-                consecutiveIdleSamples = 0
-            }
-
-            if (consecutiveIdleSamples >= idleConfirmSamples) {
-                emitShot()
-            }
-        }
+        releaseSeen = true
+        if (sample.timestamp - buffer[release.startIndex].timestamp >= afterReleaseMs) emitShot(start)
     }
 
     /**
-     * Call when stopping recording to emit any in-progress shot
-     * that has reached at least FOLLOW_THROUGH.
-     * On flush, all samples including the follow-through tail are included.
+     * Call when stopping recording: emits the shot in progress if its release was seen, with
+     * whatever follow-through was recorded.
      */
     fun flush() = synchronized(lock) {
-        if (reachedFollowThrough && shotStartIndex != null) {
-            consecutiveIdleSamples = 0
-            emitShot()
-        } else {
-            reset()
-        }
+        val start = shotStartIndex
+        if (start != null && releaseSeen) emitShot(start) else reset()
     }
 
-    private fun emitShot() {
-        val start = shotStartIndex ?: return
-
-        // End the shot at the sample just before idle confirmation started
-        val endIdx = (buffer.size - 1 - consecutiveIdleSamples).coerceAtLeast(start)
-
-        if (endIdx <= start) {
-            reset()
-            return
-        }
-
-        val shotSamples = buffer.subList(start, endIdx + 1).toList()
-        val analysis = analyzer.analyze(shotSamples)
-
-        onShotDetected(DetectedShot(shotSamples, analysis.metrics))
-
-        // Keep remaining samples for potential next shot detection
-        val keepFrom = endIdx + 1
-        if (keepFrom < buffer.size) {
-            val keep = buffer.subList(keepFrom, buffer.size).toList()
-            buffer.clear()
-            buffer.addAll(keep)
-        } else {
-            buffer.clear()
-        }
-
-        shotStartIndex = null
-        reachedFollowThrough = false
-        consecutiveIdleSamples = 0
+    private fun emitShot(start: Int) {
+        val shotSamples = buffer.subList(start, buffer.size).toList()
+        reset()
+        onShotDetected(DetectedShot(shotSamples, analyzer.analyze(shotSamples).metrics))
     }
 
     private fun reset() {
         buffer.clear()
         shotStartIndex = null
-        reachedFollowThrough = false
-        consecutiveIdleSamples = 0
-    }
-
-    private fun gyroMagnitude(sample: ImuSample): Float {
-        val g = sample.gyroscope ?: return 0f
-        return sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+        releaseSeen = false
     }
 }

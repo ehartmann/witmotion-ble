@@ -1,128 +1,110 @@
 package fr.eande.witmotion.archery
 
-import fr.eande.witmotion.ImuSample
 import com.google.common.truth.Truth.assertThat
-import org.junit.Before
+import fr.eande.witmotion.ImuSample
 import org.junit.Test
 
 class ShotCycleDetectorTest {
 
-    private lateinit var detector: ShotCycleDetector
     private val detectedShots = mutableListOf<ShotCycleDetector.DetectedShot>()
+    private var t = 0L
 
-    @Before
-    fun setUp() {
-        detectedShots.clear()
-        detector = ShotCycleDetector(
-            analyzer = BowMovementAnalyzer(
-                holdThreshold = 5f,
-                drawThreshold = 20f,
-                releaseAccelThreshold = 2f,
-                minHoldMs = 100,
-                followThroughMs = 200
-            ),
-            idleConfirmSamples = 5,
-            onShotDetected = { detectedShots.add(it) }
-        )
-    }
+    /** Short phases for the edge-case tests; the realistic tests use the default analyzer. */
+    private val quickAnalyzer = BowMovementAnalyzer(minHoldMs = 100, followThroughMs = 200)
+
+    private fun detector(
+        analyzer: BowMovementAnalyzer = quickAnalyzer,
+        afterReleaseMs: Long = 400,
+        maxDrawMs: Long = 30_000
+    ) = ShotCycleDetector(analyzer, afterReleaseMs = afterReleaseMs, maxDrawMs = maxDrawMs) { detectedShots.add(it) }
 
     private fun sample(
         time: Long,
-        gyro: FloatArray = floatArrayOf(0f, 0f, 0f),
-        accel: FloatArray = floatArrayOf(0f, 0f, 1f),
-        euler: FloatArray = floatArrayOf(0f, 0f, 0f)
-    ) = ImuSample(
-        timestamp = time,
-        gyroscope = gyro,
-        acceleration = accel,
-        euler = euler
-    )
+        gyro: Float = 0f,
+        accel: FloatArray = floatArrayOf(0f, 0f, 1f)
+    ) = ImuSample(timestamp = time, gyroscope = floatArrayOf(gyro, 0f, 0f), acceleration = accel, euler = floatArrayOf(2f, 0f, 0f))
 
-    private fun feedFullShotCycle(startTime: Long): Long {
-        var t = startTime
-        // DRAW
-        repeat(10) { detector.onSample(sample(t, gyro = floatArrayOf(30f, 0f, 0f))); t += 20 }
-        // HOLD
-        repeat(20) {
-            detector.onSample(sample(t, gyro = floatArrayOf(1f, 0f, 0f), euler = floatArrayOf(2f, 0f, 0f)))
-            t += 20
+    /** Feeds [durationMs] of samples every [stepMs] with the given angular velocity. */
+    private fun ShotCycleDetector.feed(durationMs: Long, gyro: Float, stepMs: Long = 20) {
+        val end = t + durationMs
+        while (t < end) {
+            onSample(sample(t, gyro))
+            t += stepMs
         }
-        // RELEASE
-        detector.onSample(sample(t, gyro = floatArrayOf(1f, 0f, 0f), accel = floatArrayOf(5f, 2f, 3f)))
-        t += 20
-        // FOLLOW-THROUGH (enough to exceed followThroughMs = 200ms)
-        repeat(15) {
-            detector.onSample(sample(t, gyro = floatArrayOf(2f, 0f, 0f)))
-            t += 20
-        }
-        return t
+    }
+
+    private fun ShotCycleDetector.release(stepMs: Long = 20) {
+        onSample(sample(t, 1f, accel = floatArrayOf(5f, 2f, 3f)))
+        t += stepMs
+    }
+
+    /** Draw, hold, release and [followMs] of follow-through. */
+    private fun ShotCycleDetector.shot(drawMs: Long = 200, holdMs: Long = 400, followMs: Long = 600, stepMs: Long = 20) {
+        feed(drawMs, 30f, stepMs)
+        feed(holdMs, 1f, stepMs)
+        release(stepMs)
+        feed(followMs, 2f, stepMs)
     }
 
     @Test
-    fun `detects complete shot cycle`() {
-        var t = 0L
-        // IDLE
-        repeat(5) { detector.onSample(sample(t)); t += 20 }
-        t = feedFullShotCycle(t)
-        // Return to IDLE to trigger shot finalization
-        repeat(10) { detector.onSample(sample(t)); t += 20 }
+    fun `a typical 9 s shot is emitted 3 s after the release, draw included`() {
+        val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000)
+        detector.feed(1_000, 0f)                           // idle
+        detector.feed(1_000, 30f)                          // draw
+        detector.feed(5_000, 1f)                           // aim
+        val releaseAt = t
+        detector.release()
+        detector.feed(2_900, 2f)                           // follow-through so far
+        assertThat(detectedShots).isEmpty()
+
+        detector.feed(200, 2f)                             // 3 s after the release
 
         assertThat(detectedShots).hasSize(1)
-        assertThat(detectedShots[0].samples.size).isGreaterThan(10)
-        assertThat(detectedShots[0].metrics).isNotNull()
-        assertThat(detectedShots[0].metrics!!.holdScore).isGreaterThan(0f)
-        // Verify shot starts at DRAW, not IDLE
-        val firstSampleGyro = detectedShots[0].samples.first().gyroscope!![0]
-        assertThat(firstSampleGyro).isGreaterThan(20f)
+        val shot = detectedShots[0]
+        assertThat(shot.samples.first().gyroscope!![0]).isEqualTo(30f)   // starts at the draw
+        assertThat(shot.samples.last().timestamp - releaseAt).isAtLeast(3_000L)
+        assertThat(shot.samples.last().timestamp - shot.samples.first().timestamp).isAtLeast(9_000L)
+        assertThat(shot.metrics).isNotNull()
     }
 
     @Test
-    fun `no shot detected without release`() {
-        var t = 0L
-        // IDLE
-        repeat(5) { detector.onSample(sample(t)); t += 20 }
-        // DRAW
-        repeat(10) { detector.onSample(sample(t, gyro = floatArrayOf(30f, 0f, 0f))); t += 20 }
-        // Back to IDLE without hold/release
-        repeat(10) { detector.onSample(sample(t)); t += 20 }
+    fun `limits are durations, so a 100 Hz sensor gives the same shot`() {
+        val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000)
+        detector.shot(drawMs = 1_000, holdMs = 5_000, followMs = 3_100, stepMs = 10)
 
-        assertThat(detectedShots).isEmpty()
+        assertThat(detectedShots).hasSize(1)
+        assertThat(detectedShots[0].samples.size).isGreaterThan(900)
     }
 
     @Test
-    fun `no shot detected with hold but no release`() {
-        var t = 0L
-        // DRAW
-        repeat(10) { detector.onSample(sample(t, gyro = floatArrayOf(30f, 0f, 0f))); t += 20 }
-        // HOLD (stable, no accel spike)
-        repeat(20) {
-            detector.onSample(sample(t, gyro = floatArrayOf(1f, 0f, 0f)))
-            t += 20
-        }
-        // Back to IDLE (let-down, no release)
-        repeat(15) { detector.onSample(sample(t)); t += 20 }
+    fun `no shot without a release`() {
+        val detector = detector()
+        detector.feed(100, 0f)
+        detector.feed(200, 30f)
+        detector.feed(400, 1f)                             // hold, then let down
+        detector.feed(300, 0f)
 
         assertThat(detectedShots).isEmpty()
     }
 
     @Test
     fun `detects two consecutive shots`() {
-        var t = 0L
-
+        val detector = detector()
         repeat(2) {
-            t = feedFullShotCycle(t)
-            // IDLE gap between shots
-            repeat(10) { detector.onSample(sample(t)); t += 20 }
+            detector.shot()
+            detector.feed(200, 0f)
         }
 
         assertThat(detectedShots).hasSize(2)
+        assertThat(detectedShots.map { it.metrics }).doesNotContain(null)
     }
 
     @Test
-    fun `flush emits in-progress shot if past follow-through`() {
-        var t = 0L
-        t = feedFullShotCycle(t)
-        // No return to IDLE — flush
+    fun `flush emits a shot whose follow-through was cut short`() {
+        val detector = detector(afterReleaseMs = 3_000)
+        detector.shot(followMs = 300)
+        assertThat(detectedShots).isEmpty()
+
         detector.flush()
 
         assertThat(detectedShots).hasSize(1)
@@ -130,70 +112,43 @@ class ShotCycleDetectorTest {
     }
 
     @Test
-    fun `buffer resets on stuck draw exceeding max size`() {
-        val smallBufferDetector = ShotCycleDetector(
-            analyzer = BowMovementAnalyzer(
-                holdThreshold = 5f,
-                drawThreshold = 20f,
-                releaseAccelThreshold = 2f,
-                minHoldMs = 100,
-                followThroughMs = 200
-            ),
-            maxBufferSize = 100,
-            idleConfirmSamples = 5,
-            onShotDetected = { detectedShots.add(it) }
-        )
+    fun `a draw with no release within maxDrawMs is dropped, and the next shot still counts`() {
+        val detector = detector(maxDrawMs = 2_000)
+        detector.feed(2_200, 30f)                          // handled without shooting
 
-        var t = 0L
-        // DRAW that never transitions to HOLD (stuck — exceeds maxBufferSize)
-        repeat(110) {
-            smallBufferDetector.onSample(sample(t, gyro = floatArrayOf(30f, 0f, 0f)))
-            t += 20
-        }
-        // Should have reset — now a valid shot should still work
-        // DRAW
-        repeat(10) { smallBufferDetector.onSample(sample(t, gyro = floatArrayOf(30f, 0f, 0f))); t += 20 }
-        // HOLD
-        repeat(20) {
-            smallBufferDetector.onSample(sample(t, gyro = floatArrayOf(1f, 0f, 0f), euler = floatArrayOf(2f, 0f, 0f)))
-            t += 20
-        }
-        // RELEASE
-        smallBufferDetector.onSample(sample(t, gyro = floatArrayOf(1f, 0f, 0f), accel = floatArrayOf(5f, 2f, 3f)))
-        t += 20
-        // FOLLOW-THROUGH
-        repeat(15) {
-            smallBufferDetector.onSample(sample(t, gyro = floatArrayOf(2f, 0f, 0f)))
-            t += 20
-        }
-        // IDLE
-        repeat(10) { smallBufferDetector.onSample(sample(t)); t += 20 }
+        detector.feed(100, 0f)
+        detector.shot()
 
-        // No shot from the stuck draw, but the valid shot should be detected
         assertThat(detectedShots).hasSize(1)
+        assertThat(detectedShots[0].samples.first().timestamp).isAtLeast(2_000L) // the stuck first 2 s are gone
+    }
+
+    @Test
+    fun `memory stays bounded while waiting for a draw`() {
+        val detector = detector()
+        detector.feed(600_000, 0f)                         // 10 minutes connected, at rest
+
+        assertThat(detector.bufferedSamples).isAtMost(2_000 / 20 + 1)
     }
 
     @Test
     fun `detectAll finds every shot of a finished recording`() {
         val recording = mutableListOf<ImuSample>()
-        var t = 0L
-        fun add(count: Int, gyro: Float, accel: FloatArray = floatArrayOf(0f, 0f, 1f)) = repeat(count) {
-            recording += sample(t, gyro = floatArrayOf(gyro, 0f, 0f), accel = accel, euler = floatArrayOf(2f, 0f, 0f))
-            t += 20
+        fun add(durationMs: Long, gyro: Float, accel: FloatArray = floatArrayOf(0f, 0f, 1f)) {
+            val end = t + durationMs
+            while (t < end) {
+                recording += sample(t, gyro, accel); t += 20
+            }
         }
         repeat(2) { shot ->
-            add(5, 0f)                                     // idle
-            add(10, 30f)                                   // draw
-            add(20, 1f)                                    // hold
-            add(1, 1f, accel = floatArrayOf(5f, 2f, 3f))   // release
-            add(15, 2f)                                    // follow-through
-            if (shot == 0) add(12, 0f)                     // back to idle; shot 2 is cut by the end
+            add(100, 0f)                                    // idle
+            add(200, 30f)                                   // draw
+            add(400, 1f)                                    // hold
+            add(20, 1f, accel = floatArrayOf(5f, 2f, 3f))   // release
+            add(if (shot == 0) 600 else 200, 2f)            // shot 2 is cut by the end
         }
 
-        val shots = ShotCycleDetector.detectAll(
-            recording.asSequence(),
-            BowMovementAnalyzer(minHoldMs = 100, followThroughMs = 200)
-        )
+        val shots = ShotCycleDetector.detectAll(recording.asSequence(), quickAnalyzer, afterReleaseMs = 400)
 
         assertThat(shots).hasSize(2)
         assertThat(shots.map { it.metrics }).doesNotContain(null)
