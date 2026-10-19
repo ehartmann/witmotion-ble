@@ -54,6 +54,7 @@ class ImuSensorManager(private val context: Context) {
         val BATTERY_LEVEL_UUID: UUID = UUID.fromString("00002A19-0000-1000-8000-00805F9B34FB")
 
         private const val SCAN_TIMEOUT_MS = 10_000L
+        private const val BATTERY_REFRESH_MS = 60_000L
 
         // WitMotion device-config commands: [0xFF] [0xAA] [RegAddr] [DataL] [DataH].
         // Register 0x03 is the output rate (0x08 = 50 Hz); 0x69/0xB588 unlocks config writes.
@@ -96,6 +97,12 @@ class ImuSensorManager(private val context: Context) {
     private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScan() }
+    private val batteryRefresh = object : Runnable {
+        override fun run() {
+            readBattery()
+            mainHandler.postDelayed(this, BATTERY_REFRESH_MS)
+        }
+    }
 
     // Data callbacks. A list, not a single nullable slot: scoring and video recording each
     // register their own listener independently, so one starting/stopping never silently
@@ -270,6 +277,7 @@ class ImuSensorManager(private val context: Context) {
         gatt = null
         writeCharacteristic = null
         gattOps.clear()
+        mainHandler.removeCallbacks(batteryRefresh)
         _connectionState.value = ConnectionState.DISCONNECTED
         _connectedDevice.value = null
         Log.d(TAG, "Disconnected")
@@ -288,6 +296,7 @@ class ImuSensorManager(private val context: Context) {
                     _connectedDevice.value = null
                     writeCharacteristic = null
                     gattOps.clear()
+                    mainHandler.removeCallbacks(batteryRefresh)
                     if (this@ImuSensorManager.gatt == gatt) {
                         try {
                             gatt.close()
@@ -322,7 +331,6 @@ class ImuSensorManager(private val context: Context) {
             }
 
             writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID)
-            val batteryChar = gatt.getService(BATTERY_SERVICE_UUID)?.getCharacteristic(BATTERY_LEVEL_UUID)
 
             gattOps.clear()
             service.getCharacteristic(NOTIFY_CHAR_UUID)?.let { notifyChar ->
@@ -341,7 +349,9 @@ class ImuSensorManager(private val context: Context) {
                 }
             }
             configureRate()
-            if (batteryChar != null) gattOps.enqueue(gatt) { g -> g.readCharacteristic(batteryChar) }
+            // Read now, then every minute: the level drains over a long session
+            mainHandler.removeCallbacks(batteryRefresh)
+            mainHandler.post(batteryRefresh)
 
             _connectionState.value = ConnectionState.CONNECTED
             _connectedDevice.value = ImuSensorDevice(
@@ -407,6 +417,12 @@ class ImuSensorManager(private val context: Context) {
     fun sendCommands(vararg commands: ByteArray) {
         val g = gatt ?: return
         for (command in listOf(UNLOCK) + commands) gattOps.enqueue(g) { sendCommand(command) }
+    }
+
+    private fun readBattery() {
+        val g = gatt ?: return
+        val battery = g.getService(BATTERY_SERVICE_UUID)?.getCharacteristic(BATTERY_LEVEL_UUID) ?: return
+        gattOps.enqueue(g) { it.readCharacteristic(battery) }
     }
 
     /** Sets 50 Hz output. Called automatically on connect; not saved to the sensor's flash. */
