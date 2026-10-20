@@ -27,7 +27,9 @@ class BowMovementAnalyzer(
     private val followThroughMs: Long = 500,       // ms after release
     // At release the gyro often crosses drawThreshold one or two samples before the accel spike
     // (seen on the WT9011DCL at ~25 Hz): look this far ahead for the spike before calling it a draw
-    private val releaseWindowMs: Long = 200
+    private val releaseWindowMs: Long = 200,
+    /** The acceleration jump of a release is measured over this window, whatever the rate (see [accelJump]). */
+    private val jumpWindowMs: Long = 20
 ) {
 
     data class ShotAnalysis(
@@ -67,7 +69,7 @@ class BowMovementAnalyzer(
         for (i in samples.indices) {
             val s = samples[i]
             val gyroMag = gyroMagnitude(s)
-            val accelSpike = accelSpikeMagnitude(s, samples.getOrNull(i - 1))
+            val accelSpike = accelJump(samples, i)
             val newPhase: ShotPhase
 
             when (currentPhase) {
@@ -204,10 +206,29 @@ class BowMovementAnalyzer(
         val start = samples[from].timestamp
         var j = from
         while (j < samples.size && samples[j].timestamp - start <= windowMs) {
-            if (accelSpikeMagnitude(samples[j], samples.getOrNull(j - 1)) > releaseAccelThreshold) return true
+            if (accelJump(samples, j) > releaseAccelThreshold) return true
             j++
         }
         return false
+    }
+
+    /**
+     * Largest change of the acceleration vector between sample [i] and any sample of the
+     * [jumpWindowMs] before it. Between consecutive samples the jump shrinks with the rate (at
+     * 200 Hz a release that ramps over 10 ms never jumps 2 g in 5 ms); over a fixed window it
+     * does not.
+     */
+    private fun accelJump(samples: List<ImuSample>, i: Int): Float {
+        val current = samples[i]
+        var largest = 0f
+        var j = i - 1
+        while (j >= 0 && current.timestamp - samples[j].timestamp <= jumpWindowMs) {
+            largest = maxOf(largest, accelSpikeMagnitude(current, samples[j]))
+            j--
+        }
+        // The previous sample counts even past the window, as before: a gap in the link must not hide a release
+        if (j == i - 1 && i > 0) largest = accelSpikeMagnitude(current, samples[i - 1])
+        return largest
     }
 
     private fun gyroMagnitude(sample: ImuSample): Float {

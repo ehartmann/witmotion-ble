@@ -82,6 +82,46 @@ class BowMovementAnalyzerTest {
         assertThat(phases.any { it.phase == ShotPhase.RELEASE }).isTrue()
     }
 
+    /**
+     * Draw, a 400 ms hold, then the release shock as recorded on 2026-10-20: from 1 g to 3.6 g in
+     * 10 ms, back to 1 g over the next 100 ms; sampled every [periodMs].
+     */
+    private fun shotWithRampedRelease(periodMs: Long): List<ImuSample> {
+        val samples = mutableListOf<ImuSample>()
+        var t = 0L
+        while (t < 300) { samples += sample(t, gyro = floatArrayOf(25f, 0f, 0f)); t += periodMs }
+        while (t < 700) { samples += sample(t, gyro = floatArrayOf(1f, 0f, 0f)); t += periodMs }
+        val start = t
+        while (t < start + 400) {
+            val dt = (t - start).toFloat()
+            val z = when {
+                dt <= 10f -> 1f + 2.6f * dt / 10f
+                dt <= 110f -> 3.6f - 2.6f * (dt - 10f) / 100f
+                else -> 1f
+            }
+            samples += sample(t, gyro = floatArrayOf(if (dt == 0f) 1f else 8f, 0f, 0f), accel = floatArrayOf(0f, 0f, z))
+            t += periodMs
+        }
+        return samples
+    }
+
+    @Test
+    fun `a release ramping over 10 ms is found at 50, 100 and 200 Hz`() {
+        for (period in listOf(20L, 10L, 5L)) {
+            val phases = analyzer.detectPhases(shotWithRampedRelease(period))
+
+            assertThat(phases.map { it.phase }).contains(ShotPhase.RELEASE)
+        }
+    }
+
+    @Test
+    fun `a slow change of acceleration during the hold is not a release`() {
+        val draw = (0L..15L).map { sample(it * 5, gyro = floatArrayOf(25f, 0f, 0f)) }
+        val hold = (16L..200L).map { sample(it * 5, gyro = floatArrayOf(1f, 0f, 0f), accel = floatArrayOf(0f, 0f, 1f + (it - 16) * 0.015f)) }
+
+        assertThat(analyzer.detectPhases(draw + hold).map { it.phase }).doesNotContain(ShotPhase.RELEASE)
+    }
+
     @Test
     fun `release detected when the gyro reacts a sample before the acceleration spike`() {
         // Seen on a WT9011DCL at ~25 Hz: the bow starts turning one sample before the accel jump
