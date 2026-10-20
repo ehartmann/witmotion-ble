@@ -24,6 +24,9 @@ class ImuCalibrationHelperTest {
         assertThat(hex(OutputRate.HZ_200.command)).isEqualTo("FF AA 03 0B 00")
         assertThat(hex(ImuSensorManager.READ_BATTERY)).isEqualTo("FF AA 27 64 00")
         assertThat(hex(ImuSensorManager.READ_RATE)).isEqualTo("FF AA 27 03 00")
+        assertThat(hex(Installation.HORIZONTAL.command)).isEqualTo("FF AA 23 00 00")
+        assertThat(hex(Installation.VERTICAL.command)).isEqualTo("FF AA 23 01 00")
+        assertThat(hex(ImuSensorManager.READ_INSTALLATION)).isEqualTo("FF AA 27 23 00")
     }
 
     @Test
@@ -31,5 +34,7 @@ class ImuCalibrationHelperTest {
         assertThat(OutputRate.fromCode(0x08)).isEqualTo(OutputRate.HZ_50)
         assertThat(OutputRate.fromCode(0x0B)).isEqualTo(OutputRate.HZ_200)
         assertThat(OutputRate.fromCode(0x0A)).isNull()
+        assertThat(Installation.fromCode(0x01)).isEqualTo(Installation.VERTICAL)
+        assertThat(Installation.fromCode(0x02)).isNull()
     }
 }

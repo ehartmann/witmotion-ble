@@ -68,6 +68,8 @@ class ImuSensorManager(private val context: Context) {
         val READ_BATTERY = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, ImuDataParser.REG_BATTERY_VOLTAGE.toByte(), 0x00)
         private const val REG_OUTPUT_RATE = 0x03
         val READ_RATE = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_OUTPUT_RATE.toByte(), 0x00)
+        private const val REG_INSTALLATION = 0x23
+        val READ_INSTALLATION = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_INSTALLATION.toByte(), 0x00)
     }
 
     // State
@@ -95,7 +97,9 @@ class ImuSensorManager(private val context: Context) {
         val connectionIntervalMs: Float? = null,
         val peripheralLatency: Int? = null,
         /** Register 0x03 read back after setting the rate; see [OutputRate.fromCode]. */
-        val outputRateCode: Int? = null
+        val outputRateCode: Int? = null,
+        /** Register 0x23 read back after setting the installation; see [Installation.fromCode]. */
+        val installationCode: Int? = null
     )
 
     private val _linkStats = MutableStateFlow(LinkStats())
@@ -390,7 +394,7 @@ class ImuSensorManager(private val context: Context) {
                     }
                 }
             }
-            configureRate()
+            applySettings()
             // Read now, then every minute: the level drains over a long session
             mainHandler.removeCallbacks(batteryRefresh)
             mainHandler.post(batteryRefresh)
@@ -454,6 +458,11 @@ class ImuSensorManager(private val context: Context) {
                 Log.d(TAG, "Output rate register: 0x%02X (%s Hz)".format(code, OutputRate.fromCode(code)?.hz ?: "?"))
                 _linkStats.update { it.copy(outputRateCode = code) }
             }
+            registers.firstOrNull { it.startRegister == REG_INSTALLATION }?.let { reply ->
+                val code = reply.values[0]
+                Log.d(TAG, "Installation register: 0x%02X (%s)".format(code, Installation.fromCode(code) ?: "?"))
+                _linkStats.update { it.copy(installationCode = code) }
+            }
             _linkStats.update {
                 it.copy(
                     notifications = it.notifications + 1,
@@ -509,8 +518,26 @@ class ImuSensorManager(private val context: Context) {
             if (isConnected()) configureRate()
         }
 
-    /** Sets [outputRate], then reads register 0x03 back into [linkStats]. Called automatically on connect. */
+    /** Sets [outputRate], then reads register 0x03 back into [linkStats]. */
     fun configureRate() = sendCommands(outputRate.command, READ_RATE)
+
+    /**
+     * How the sensor is mounted, written on every connect and at once when changed while
+     * connected: the sensor keeps the last value written, even by another app, so leaving it
+     * unwritten would make the angles depend on that. Not saved to the sensor's flash.
+     */
+    @Volatile
+    var installation: Installation = Installation.HORIZONTAL
+        set(value) {
+            field = value
+            if (isConnected()) configureInstallation()
+        }
+
+    /** Sets [installation], then reads register 0x23 back into [linkStats]. */
+    fun configureInstallation() = sendCommands(installation.command, READ_INSTALLATION)
+
+    /** On connect: [outputRate] and [installation] under one unlock, both read back. */
+    private fun applySettings() = sendCommands(outputRate.command, installation.command, READ_RATE, READ_INSTALLATION)
 
     /**
      * Makes [ImuSample.timestamp] relative to now; until called, timestamps are

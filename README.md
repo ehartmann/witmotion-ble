@@ -60,6 +60,7 @@ sensor.addSampleListener { sample -> /* BLE thread */ }
 sensor.startScan()                      // discoveredDevices: StateFlow
 sensor.connect(device)                  // connectionState, batteryLevel, lastSample
 sensor.outputRate = OutputRate.HZ_100   // set on every connect, at once if connected
+sensor.installation = Installation.VERTICAL  // likewise: standing sensor, Y arrow up
                                         // linkStats: frame counts, negotiated interval, rate read back
 ```
 
@@ -80,8 +81,11 @@ Reference: WT9011DCL-BT50 Communication Protocol v25-04-06 and WitMotion's Pytho
 
 Commands are `FF AA <register> <low> <high>`, preceded by the unlock `FF AA 69 88 B5`
 and sent 100 ms apart, as the SDK does. On connect the library sets register `0x03`
-(output rate) to `outputRate` (`0x08`, 50 Hz, by default) without saving to flash, then
-reads it back (`FF AA 27 03 00`) into `linkStats.outputRateCode`. Calibration uses register
+(output rate) to `outputRate` (`0x08`, 50 Hz, by default) and register `0x23`
+(installation) to `installation` (`0`, horizontal, by default; `1`, vertical, needs the Y
+axis arrow up), without saving to flash, then reads both back (`FF AA 27 03 00`,
+`FF AA 27 23 00`) into `linkStats`. The installation is written even when horizontal: the
+sensor keeps the last value written, even by another app. Calibration uses register
 `0x01` (`1` accelerometer, `7` magnetic field, `0` end) followed by a save
 (`FF AA 00 00 00`). The battery level is register `0x64`, read every minute with
 `FF AA 27 64 00` (no unlock); the `55 71` reply carries the voltage in 0.01 V, mapped to a
