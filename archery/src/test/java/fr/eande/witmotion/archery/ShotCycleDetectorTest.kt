@@ -47,6 +47,21 @@ class ShotCycleDetectorTest {
     }
 
     @Test
+    fun `a shot more than maxDraw after handling the bow is still found`() {
+        // 2026-10-20, 100 Hz: the bow lowered after a shot started the clock, the next release came 30.2 s later
+        val detector = detector(maxDrawMs = 30_000)
+        detector.feed(700, 30f)    // bow lowered after the previous shot
+        detector.feed(17_000, 6f)  // waiting, bow moving a little
+        detector.feed(2_000, 1f)   // still
+        detector.feed(2_500, 30f)  // raise and draw
+        detector.feed(9_800, 1f)   // long aim: the release comes 32 s after the handling
+        detector.release()
+        detector.feed(600, 2f)
+
+        assertThat(detectedShots).hasSize(1)
+    }
+
+    @Test
     fun `a typical 9 s shot is emitted 3 s after the release, draw included`() {
         val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000)
         detector.feed(1_000, 0f)                           // idle
