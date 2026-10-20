@@ -166,6 +166,42 @@ class ImuDataParserTest {
     }
 
     @Test
+    fun `a notification packing four 55 61 frames gives four samples, one period apart`() {
+        // 100 Hz: the sensor packs 4 frames per notification; roll tells them apart
+        val notification = (1..4).map { buildCombinedPacket(0, 0, 0, 0, 0, 0, (it * 1000).toShort()) }
+            .reduce(ByteArray::plus)
+
+        val samples = ImuDataParser.packetsToSamples(ImuDataParser.parse(notification), receivedAt = 1_000, periodMs = 10)
+
+        assertThat(samples.map { it.timestamp }).containsExactly(970L, 980L, 990L, 1_000L).inOrder()
+        assertThat(samples.map { it.euler!![0] }).isInStrictOrder()
+        assertThat(samples.all { it.acceleration != null && it.gyroscope != null }).isTrue()
+    }
+
+    @Test
+    fun `packed frames are never dated before the previous sample`() {
+        val notification = buildCombinedPacket(0) + buildCombinedPacket(0)
+
+        val samples = ImuDataParser.packetsToSamples(ImuDataParser.parse(notification), receivedAt = 1_000, periodMs = 20, notBefore = 990)
+
+        assertThat(samples.map { it.timestamp }).containsExactly(990L, 1_000L).inOrder()
+    }
+
+    @Test
+    fun `legacy packets of one notification still make one sample`() {
+        val notification = buildPacket(ImuDataParser.TYPE_ACCELERATION, 0, 0, 2048) +
+            buildPacket(ImuDataParser.TYPE_GYROSCOPE, 0, 0, 0) +
+            buildPacket(ImuDataParser.TYPE_EULER, 0, 0, 0)
+
+        val samples = ImuDataParser.packetsToSamples(ImuDataParser.parse(notification), receivedAt = 500, periodMs = 20)
+
+        assertThat(samples).hasSize(1)
+        assertThat(samples[0].timestamp).isEqualTo(500L)
+        assertThat(samples[0].acceleration).isNotNull()
+        assertThat(samples[0].euler).isNotNull()
+    }
+
+    @Test
     fun `parse BLE 5 combined packet into acceleration gyroscope and euler`() {
         // az = 8g, wz = 200 deg/s, roll = 90 deg, yaw = -90 deg
         val packet = buildCombinedPacket(0, 0, 16384, 0, 0, 3277, 16384, 0, (-16384).toShort())

@@ -9,7 +9,8 @@ package fr.eande.witmotion
  *   - Legacy serial (11 bytes):
  *     [0x55] [Type] [D0L] [D0H] [D1L] [D1H] [D2L] [D2H] [D3L] [D3H] [Checksum]
  *
- * Multiple packets may be concatenated in a single BLE notification.
+ * Multiple packets may be concatenated in a single BLE notification: from 50 Hz on the
+ * sensor packs several 55 61 frames into one (2 at 50 Hz, 4 at 100 Hz).
  * This parser extracts all valid packets and returns typed ImuSample fields.
  */
 object ImuDataParser {
@@ -140,6 +141,28 @@ object ImuDataParser {
         centivolts >= 350 -> 10
         centivolts >= 340 -> 5
         else -> 0
+    }
+
+    /**
+     * Splits the packets of one notification into samples: a packet type seen again starts a
+     * new sample, so each packed 55 61 frame is its own sample while legacy packets (acceleration,
+     * gyro and angle sent separately) still make one. The last sample gets [receivedAt] and each
+     * earlier one [periodMs] less, as the sensor sampled them, never before [notBefore].
+     */
+    fun packetsToSamples(
+        packets: List<ParsedPacket>,
+        receivedAt: Long,
+        periodMs: Long,
+        notBefore: Long = Long.MIN_VALUE
+    ): List<ImuSample> {
+        val groups = mutableListOf<MutableList<ParsedPacket>>()
+        for (p in packets) {
+            val current = groups.lastOrNull()
+            if (current == null || current.any { it.type == p.type }) groups.add(mutableListOf(p)) else current.add(p)
+        }
+        return groups.mapIndexed { i, group ->
+            packetsToSample(group, maxOf(receivedAt - (groups.size - 1 - i) * periodMs, notBefore))
+        }
     }
 
     /**

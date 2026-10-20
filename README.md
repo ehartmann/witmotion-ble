@@ -89,19 +89,21 @@ percentage with the protocol's table. The sensor has no GATT Battery Service.
 All GATT writes and reads go through `GattOpQueue`: Android rejects an operation
 issued while another one is in flight.
 
-### Measured rate
+### Packed frames and sample timestamps
 
-With 50 Hz set, a WT9011DCL on a Galaxy S22 delivers **24.9 Hz** (2026-10-20): frames
-arrive in a fixed 30, 30, 60 ms pattern, i.e. one frame every 40 ms leaving on a 30 ms
-connection-event grid, one 20-byte frame per notification (the protocol caps a BLE upload
-at 20 bytes, so the negotiated MTU of 247 does not help). `CONNECTION_PRIORITY_HIGH`
-(11.25–15 ms) is requested after service discovery and reaches the controller, yet the
-grid stays at 30 ms. Neither WitMotion's documentation nor its SDKs mention a BLE rate cap
-or connection parameters, and its Android SDK never requests a connection priority.
+From 50 Hz on, the sensor sends a notification about every 40 ms and packs the frames
+sampled meanwhile into it: 2 at 50 Hz, 4 at 100 Hz (the manual: "50Hz~200Hz data package
+transmission"; the MTU of 247 the sensor requests leaves room for them). The library makes
+one sample per `55 61` frame and dates the frames of a notification one sampling period
+apart, the last one at reception, never before the previous sample. Up to 0.2.3 it merged a
+notification into a single sample, so every rate from 50 Hz up gave 25 Hz (measured on a
+Galaxy S22, 2026-10-20).
 
-`linkStats` exposes the interval and latency the stack reports through the hidden
-`BluetoothGattCallback.onConnectionUpdated` (as Nordic's Android-BLE-Library does) and the
-rate register read back, to tell a link cap from a sensor cap.
+About 4 s after connecting, the sensor sets the connection interval to 30 ms with a
+peripheral latency of 10, overriding `CONNECTION_PRIORITY_HIGH`; with packing, that interval
+is enough (RGu0/WT901 measured 198 Hz at 200 Hz). `linkStats` exposes the interval and
+latency the stack reports through the hidden `BluetoothGattCallback.onConnectionUpdated`
+(as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Build & test
 
@@ -116,7 +118,7 @@ JDK 21, AGP 9.4.1, Kotlin 2.4.21, compileSdk 36, minSdk 26.
 - WT9011DCL-BT50 Communication Protocol, manual v25-04-06 (WitMotion PDF, not published
   online) — frames `55 61` / `55 71`, commands, register table, output rates `0x01`–`0x0B`
   (section 3.4), "the maximum amount of data uploaded via Bluetooth is 20 Bytes each time"
-  (section 1).
+  (section 1), which no longer holds from 50 Hz on, where notifications pack several frames.
 - WT9011DCL-BT5.0 Datasheet v23-0608 (WitMotion PDF) — 0.2–200 Hz output, 10 Hz by
   default, 115200 baud internal data interface.
 - [WITMOTION/WitBluetooth_BWT901BLE5_0](https://github.com/WITMOTION/WitBluetooth_BWT901BLE5_0)
@@ -131,6 +133,20 @@ JDK 21, AGP 9.4.1, Kotlin 2.4.21, compileSdk 36, minSdk 26.
   `0x30` (time), and `0x64` / `0x40` (battery, temperature) in a loop.
 - [WitMotion BLE 5.0 protocol (gitbook)](https://wit-motion.gitbook.io/witmotion-sdk/ble-5.0-protocol/bluetooth-5.0-communication-protocol.md)
   — register read `FF AA 27 XX 00`, `55 71` reply (start register + 8 registers).
+- [RGu0/WT901](https://github.com/RGu0/WT901) — Python library tested on a WT901BLE67:
+  49.45 / 99.26 / 198.43 Hz measured at 50 / 100 / 200 Hz; `0x0A` gives 99.29 Hz.
+- [RGu0/WT901, `docs/protocol.md`](https://github.com/RGu0/WT901/blob/main/docs/protocol.md)
+  — "50 Hz 以上一次 BLE 通知可能携带多帧" (above 50 Hz one notification may carry several
+  frames), 4 frames per notification at 100 Hz, firmware `10080.1.22` in registers
+  `0x2E`/`0x2F`, a connection interval of about 30 ms there too.
+- [FreecityDong/WT9011DCL](https://github.com/FreecityDong/WT9011DCL) — WT901BLE67 on macOS:
+  about 195 Hz received at 200 Hz; unlock, rate write and save.
+- [BWT901BLECL5.0 manual (Manuals+)](https://manuals.plus/wit-motion/bwt901blecl5-0-9-axis-imu-sensor-manual)
+  — "Data output frequency: 0.2Hz~200Hz, 50Hz~200Hz data package transmission, default
+  10HZ."
+- [WitBluetooth_BWT901BLE5_0 issue #6](https://github.com/WITMOTION/WitBluetooth_BWT901BLE5_0/issues/6)
+  — a WT9011DCL-BT50 on firmware `10080.1.6` at 100 Hz, with a timestamped output content
+  selected through register `0x96`. No firmware is published; none is needed for packing.
 - [WT901BLECL datasheet](https://cdn.robotshop.com/rbm/f83835f4-5e29-4ee0-9cc2-e49300031503/b/bf5c1f59-3b36-40a4-a5f0-e5a0eea52565/a8cd29da_wt901blecl-datasheet.pdf)
   — sister model: up to 200 Hz, 20 bytes per BLE upload; lists 200 Hz as `0x0A`, unlike
   the WT9011DCL protocol and SDK (`0x0B`).

@@ -119,6 +119,7 @@ class ImuSensorManager(private val context: Context) {
     @Volatile private var userInitiatedDisconnect = false
     private val gattOps = GattOpQueue()
     @Volatile private var recordingStartTime = 0L
+    private var lastSampleTimestamp = Long.MIN_VALUE
     @Volatile private var discoveryRetried = false
     private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -462,9 +463,15 @@ class ImuSensorManager(private val context: Context) {
                 )
             }
             if (packets.isNotEmpty()) {
-                val sample = ImuDataParser.packetsToSample(packets, SystemClock.elapsedRealtime() - recordingStartTime)
-                _lastSample.value = sample
-                sampleListeners.forEach { it(sample) }
+                val samples = ImuDataParser.packetsToSamples(
+                    packets,
+                    SystemClock.elapsedRealtime() - recordingStartTime,
+                    1000L / outputRate.hz,
+                    lastSampleTimestamp
+                )
+                lastSampleTimestamp = samples.last().timestamp
+                samples.forEach { sample -> sampleListeners.forEach { it(sample) } }
+                _lastSample.value = samples.last()
             }
         }
     }
@@ -511,6 +518,7 @@ class ImuSensorManager(private val context: Context) {
      */
     fun resetRecordingTimestamp() {
         recordingStartTime = SystemClock.elapsedRealtime()
+        lastSampleTimestamp = Long.MIN_VALUE
     }
 
     /** Returns whether the write was started; its completion arrives in onCharacteristicWrite. */
