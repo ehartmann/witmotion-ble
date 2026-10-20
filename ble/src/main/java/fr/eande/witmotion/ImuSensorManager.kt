@@ -1,6 +1,7 @@
 package fr.eande.witmotion
 
 import android.annotation.SuppressLint
+import androidx.annotation.Keep
 import androidx.annotation.RequiresApi
 import android.os.Build
 import android.os.Handler
@@ -60,12 +61,13 @@ class ImuSensorManager(private val context: Context) {
         private const val COMMAND_SPACING_MS = 100L
 
         // WitMotion device-config commands: [0xFF] [0xAA] [RegAddr] [DataL] [DataH].
-        // Register 0x03 is the output rate (0x08 = 50 Hz); 0x69/0xB588 unlocks config writes.
+        // 0x69/0xB588 unlocks config writes; the output rate commands are in OutputRate.
         val UNLOCK = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x69, 0x88.toByte(), 0xB5.toByte())
-        val SET_RATE_50HZ = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x03, 0x08, 0x00)
         val SAVE_CONFIG = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x00, 0x00)
         // Register read (no unlock needed): the sensor answers with a 55 71 notification
         val READ_BATTERY = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, ImuDataParser.REG_BATTERY_VOLTAGE.toByte(), 0x00)
+        private const val REG_OUTPUT_RATE = 0x03
+        val READ_RATE = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_OUTPUT_RATE.toByte(), 0x00)
     }
 
     // State
@@ -81,12 +83,19 @@ class ImuSensorManager(private val context: Context) {
     private val _batteryLevel = MutableStateFlow(-1) // -1 = unknown
     val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
 
-    /** Totals since the last connect: which frame format arrives, and how much of the stream is not usable. */
+    /**
+     * Since the last connect: which frame format arrives, how much of the stream is not usable,
+     * and the link and rate settings actually in effect (null until reported).
+     */
     data class LinkStats(
         val notifications: Long = 0,
         val combinedFrames: Long = 0,
         val legacyFrames: Long = 0,
-        val skippedBytes: Long = 0
+        val skippedBytes: Long = 0,
+        val connectionIntervalMs: Float? = null,
+        val peripheralLatency: Int? = null,
+        /** Register 0x03 read back after setting the rate; see [OutputRate.fromCode]. */
+        val outputRateCode: Int? = null
     )
 
     private val _linkStats = MutableStateFlow(LinkStats())
@@ -305,6 +314,7 @@ class ImuSensorManager(private val context: Context) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.d(TAG, "Connected, discovering services...")
+                    _linkStats.value = LinkStats()
                     discoveryRetried = false
                     gatt.discoverServices()
                 }
@@ -362,7 +372,6 @@ class ImuSensorManager(private val context: Context) {
             Log.d(TAG, "High connection priority requested: $fast")
 
             writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID)
-            _linkStats.value = LinkStats()
 
             gattOps.clear()
             service.getCharacteristic(NOTIFY_CHAR_UUID)?.let { notifyChar ->
@@ -402,6 +411,20 @@ class ImuSensorManager(private val context: Context) {
             gattOps.next(gatt)
         }
 
+        /**
+         * Hidden in the SDK but called by the framework since API 26 (Nordic's Android-BLE-Library
+         * relies on it too): the only report of the parameters actually negotiated, which can differ
+         * from what requestConnectionPriority asked for. [interval] is in 1.25 ms units.
+         */
+        @Keep
+        @Suppress("unused")
+        fun onConnectionUpdated(gatt: BluetoothGatt, interval: Int, latency: Int, timeout: Int, status: Int) {
+            Log.d(TAG, "Connection updated: interval ${interval * 1.25f} ms, latency $latency, timeout ${timeout * 10} ms, status $status")
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                _linkStats.update { it.copy(connectionIntervalMs = interval * 1.25f, peripheralLatency = latency) }
+            }
+        }
+
         @Deprecated("Deprecated in API 33+, kept for backward compatibility with minSdk 26")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
@@ -424,6 +447,11 @@ class ImuSensorManager(private val context: Context) {
             registers.firstOrNull { it.startRegister == ImuDataParser.REG_BATTERY_VOLTAGE }?.let {
                 _batteryLevel.value = ImuDataParser.batteryPercent(it.values[0])
                 Log.d(TAG, "Battery: ${it.values[0] / 100f} V, ${_batteryLevel.value}%")
+            }
+            registers.firstOrNull { it.startRegister == REG_OUTPUT_RATE }?.let { reply ->
+                val code = reply.values[0]
+                Log.d(TAG, "Output rate register: 0x%02X (%s Hz)".format(code, OutputRate.fromCode(code)?.hz ?: "?"))
+                _linkStats.update { it.copy(outputRateCode = code) }
             }
             _linkStats.update {
                 it.copy(
@@ -466,8 +494,16 @@ class ImuSensorManager(private val context: Context) {
     /** The WT9011DCL has no GATT Battery Service: the level comes from register 0x64 (see deliverNotify). */
     private fun readBattery() = enqueuePaced(listOf(READ_BATTERY))
 
-    /** Sets 50 Hz output. Called automatically on connect; not saved to the sensor's flash. */
-    fun configureRate() = sendCommands(SET_RATE_50HZ)
+    /** Output rate set on every connect, and at once when changed while connected. Not saved to the sensor's flash. */
+    @Volatile
+    var outputRate: OutputRate = OutputRate.HZ_50
+        set(value) {
+            field = value
+            if (isConnected()) configureRate()
+        }
+
+    /** Sets [outputRate], then reads register 0x03 back into [linkStats]. Called automatically on connect. */
+    fun configureRate() = sendCommands(outputRate.command, READ_RATE)
 
     /**
      * Makes [ImuSample.timestamp] relative to now; until called, timestamps are

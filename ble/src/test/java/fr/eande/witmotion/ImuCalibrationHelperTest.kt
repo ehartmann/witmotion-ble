@@ -19,7 +19,17 @@ class ImuCalibrationHelperTest {
     @Test
     fun `config and register-read commands match the protocol`() {
         assertThat(hex(ImuSensorManager.UNLOCK)).isEqualTo("FF AA 69 88 B5")
-        assertThat(hex(ImuSensorManager.SET_RATE_50HZ)).isEqualTo("FF AA 03 08 00")
+        assertThat(hex(OutputRate.HZ_50.command)).isEqualTo("FF AA 03 08 00")
+        assertThat(hex(OutputRate.HZ_100.command)).isEqualTo("FF AA 03 09 00")
+        assertThat(hex(OutputRate.HZ_200.command)).isEqualTo("FF AA 03 0B 00")
         assertThat(hex(ImuSensorManager.READ_BATTERY)).isEqualTo("FF AA 27 64 00")
+        assertThat(hex(ImuSensorManager.READ_RATE)).isEqualTo("FF AA 27 03 00")
+    }
+
+    @Test
+    fun `a rate register read back maps to its rate`() {
+        assertThat(OutputRate.fromCode(0x08)).isEqualTo(OutputRate.HZ_50)
+        assertThat(OutputRate.fromCode(0x0B)).isEqualTo(OutputRate.HZ_200)
+        assertThat(OutputRate.fromCode(0x0A)).isNull()
     }
 }
