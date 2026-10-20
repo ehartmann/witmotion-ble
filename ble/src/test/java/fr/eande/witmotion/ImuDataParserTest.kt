@@ -179,12 +179,53 @@ class ImuDataParserTest {
     }
 
     @Test
-    fun `packed frames are never dated before the previous sample`() {
+    fun `packed frames always come after the previous sample`() {
         val notification = buildCombinedPacket(0) + buildCombinedPacket(0)
 
-        val samples = ImuDataParser.packetsToSamples(ImuDataParser.parse(notification), receivedAt = 1_000, periodMs = 20, notBefore = 990)
+        val samples = ImuDataParser.packetsToSamples(ImuDataParser.parse(notification), receivedAt = 1_000, periodMs = 20, previous = 990)
 
-        assertThat(samples.map { it.timestamp }).containsExactly(990L, 1_000L).inOrder()
+        assertThat(samples.map { it.timestamp }).isInStrictOrder()
+        assertThat(samples.first().timestamp).isGreaterThan(990L)
+    }
+
+    /** 200 Hz: 8 frames per notification every 40 ms, arriving up to 15 ms early or late. */
+    private fun jitteryStream(seconds: Int, gapAtMs: Long? = null): List<Pair<Long, List<ImuSample>>> {
+        val frames = (1..8).map { buildCombinedPacket(0) }.reduce(ByteArray::plus)
+        val jitter = listOf(0L, 15L, -12L, 4L, -15L, 9L, -3L, 12L)
+        var previous = Long.MIN_VALUE
+        val out = mutableListOf<Pair<Long, List<ImuSample>>>()
+        var k = 0
+        var nominal = 40L
+        while (nominal <= seconds * 1_000L) {
+            if (gapAtMs != null && nominal in gapAtMs until gapAtMs + 1_000) { nominal += 40; continue }
+            val arrival = nominal + jitter[k++ % jitter.size]
+            val samples = ImuDataParser.packetsToSamples(ImuDataParser.parse(frames), receivedAt = arrival, periodMs = 5, previous = previous)
+            previous = samples.last().timestamp
+            out += arrival to samples
+            nominal += 40
+        }
+        return out
+    }
+
+    @Test
+    fun `a jittery 200 Hz stream gets regular increasing timestamps`() {
+        val stream = jitteryStream(seconds = 10)
+        val times = stream.flatMap { (_, samples) -> samples.map { it.timestamp } }
+
+        val steps = times.zipWithNext { a, b -> b - a }
+        assertThat(steps.min()).isAtLeast(3L)
+        assertThat(steps.max()).isAtMost(8L)
+        val rate = (times.size - 1) * 1000.0 / (times.last() - times.first())
+        assertThat(rate).isWithin(2.0).of(200.0)
+        stream.forEach { (arrival, samples) -> assertThat(samples.last().timestamp - arrival).isIn(-30L..30L) }
+    }
+
+    @Test
+    fun `the clock jumps after a link gap instead of drifting`() {
+        val stream = jitteryStream(seconds = 4, gapAtMs = 2_000)
+        val after = stream.first { (arrival, _) -> arrival > 3_000 }
+
+        assertThat(after.second.last().timestamp - after.first).isIn(-30L..30L)
     }
 
     @Test
