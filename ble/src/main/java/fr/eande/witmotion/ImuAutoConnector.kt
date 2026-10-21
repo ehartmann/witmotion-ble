@@ -10,9 +10,10 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 
 /**
- * Scans for registered IMU devices and auto-connects to the first one found.
+ * Scans for registered IMU devices and auto-connects to the first one found (or, on request,
+ * only when a single one answers).
  *
- * Call [tryAutoConnect] once from MainActivity.onCreate for the app-start connect. It also
+ * Call [tryAutoConnect] for the app-start connect, as often as the app likes. It also
  * watches [ImuSensorManager.unexpectedDisconnects] for the whole app lifetime (a process
  * singleton held by WitnessApp, like [ImuSensorManager] itself) and retries with [retryAfterUnexpectedDisconnect]
  * when the sensor drops mid-session instead of leaving it disconnected until the app restarts.
@@ -49,35 +50,55 @@ class ImuAutoConnector(
         }
     }
 
-    /** Single scan-and-connect attempt against registered devices. */
-    private suspend fun attemptConnect(): Boolean {
+    /**
+     * Single scan-and-connect attempt against registered devices: the first one found, or with
+     * [onlyIfSingle] the only one that answered during the whole scan (none when several did).
+     */
+    private suspend fun attemptConnect(onlyIfSingle: Boolean = false): Boolean {
         if (sensorManager.isConnected()) return true
         if (store.getAll().isEmpty()) return false
 
         var connected = false
+        val found = linkedMapOf<String, ImuSensorDevice>()
         sensorManager.onDeviceDiscovered = { device ->
             if (!connected && store.isRegistered(device.address)) {
-                connected = true
-                Log.d(TAG, "Found registered device: ${device.name} (${device.address})")
-                sensorManager.connect(device)
+                if (onlyIfSingle) {
+                    found[device.address] = device
+                } else {
+                    connected = true
+                    Log.d(TAG, "Found registered device: ${device.name} (${device.address})")
+                    sensorManager.connect(device)
+                }
             }
         }
         sensorManager.startScan()
         delay(SCAN_DURATION_MS)
-        if (!connected) sensorManager.stopScan()
         sensorManager.onDeviceDiscovered = null
+        if (onlyIfSingle) {
+            found.values.singleOrNull()?.let { device ->
+                connected = true
+                Log.d(TAG, "Only registered device found: ${device.name} (${device.address})")
+                sensorManager.stopScan()
+                sensorManager.connect(device)
+            } ?: Log.d(TAG, "${found.size} registered devices found: not choosing")
+        }
+        if (!connected) sensorManager.stopScan()
         return connected
     }
 
-    fun tryAutoConnect() {
+    /**
+     * One scan-and-connect attempt, unless connected or an attempt is already in flight (a
+     * caller retrying on a timer must not cut a reconnect short).
+     */
+    fun tryAutoConnect(onlyIfSingle: Boolean = false) {
         if (sensorManager.isConnected()) return
         if (store.getAll().isEmpty()) return
+        if (autoConnectJob?.isActive == true) return
 
-        autoConnectJob?.cancel()
         autoConnectJob = scope.launch {
             Log.d(TAG, "Starting auto-connect scan...")
-            if (!attemptConnect()) {
-                Log.d(TAG, "Auto-connect scan finished — no registered device found")
+            if (!attemptConnect(onlyIfSingle)) {
+                Log.d(TAG, "Auto-connect scan finished — no device connected")
             }
         }
     }

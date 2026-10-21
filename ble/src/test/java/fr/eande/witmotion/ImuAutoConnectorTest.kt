@@ -143,4 +143,55 @@ class ImuAutoConnectorTest {
 
         verify(atLeast = 1) { sensorManager.startScan() }
     }
+
+    @Test
+    fun `tryAutoConnect onlyIfSingle connects the only registered device that answered, after the scan`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.tryAutoConnect(onlyIfSingle = true)
+        runCurrent()
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("11:22:33:44:55:66", "WT901BLE67", rssi = -60))
+        runCurrent()
+        verify(exactly = 0) { sensorManager.connect(any()) }
+        advanceTimeBy(6_000)
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.connect(match { it.address == "AA:BB:CC:DD:EE:FF" }) }
+    }
+
+    @Test
+    fun `tryAutoConnect onlyIfSingle does not pick between two registered devices`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        store.register("11:22:33:44:55:66", "WT901BLE67")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.tryAutoConnect(onlyIfSingle = true)
+        runCurrent()
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("11:22:33:44:55:66", "WT901BLE67", rssi = -60))
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -48))
+        advanceTimeBy(6_000)
+        runCurrent()
+
+        verify(exactly = 0) { sensorManager.connect(any()) }
+        verify { sensorManager.stopScan() }
+    }
+
+    @Test
+    fun `tryAutoConnect leaves an attempt in flight alone`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.tryAutoConnect()
+        runCurrent()
+        connector.tryAutoConnect(onlyIfSingle = true)
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.startScan() }
+    }
 }
