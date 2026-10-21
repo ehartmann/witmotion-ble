@@ -58,11 +58,21 @@ files to `build/release-repo/`.
 val sensor = ImuSensorManager(context)
 sensor.addSampleListener { sample -> /* BLE thread */ }
 sensor.startScan()                      // discoveredDevices: StateFlow
+sensor.startScan(addresses)             // only these sensors: Android pauses an unfiltered scan, screen off
 sensor.connect(device)                  // connectionState, batteryLevel, lastSample
 sensor.outputRate = OutputRate.HZ_100   // set on every connect, at once if connected
 sensor.installation = Installation.VERTICAL  // likewise: standing sensor, Y arrow up
                                         // linkStats: frame counts, negotiated interval, rate read back
+
+val connector = ImuAutoConnector(sensor, RegisteredImuStore(prefs), scope)
+connector.tryAutoConnect()                     // first registered sensor that answers a 5 s scan
+connector.tryAutoConnect(onlyIfSingle = true)  // only when a single registered sensor answers
+                                               // returns the attempt (or the one in flight), null when
+                                               // connected, connecting or nothing is registered
 ```
+
+`ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect. Its
+scans are filtered on the registered sensors, so they keep running with the screen off.
 
 The app requests the runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
 API 31+, `ACCESS_FINE_LOCATION` below); the library manifest declares them.
@@ -83,9 +93,15 @@ Commands are `FF AA <register> <low> <high>`, preceded by the unlock `FF AA 69 8
 and sent 100 ms apart, as the SDK does. On connect the library sets register `0x03`
 (output rate) to `outputRate` (`0x08`, 50 Hz, by default) and register `0x23`
 (installation) to `installation` (`0`, horizontal, by default; `1`, vertical, needs the Y
-axis arrow up), without saving to flash, then reads both back (`FF AA 27 03 00`,
-`FF AA 27 23 00`) into `linkStats`. The installation is written even when horizontal: the
-sensor keeps the last value written, even by another app. Calibration uses register
+axis arrow up) and register `0x24` (algorithm) to `algorithm` (`0`, 9-axis, magnetometer
+heading, by default; `1`, 6-axis, heading integrated from the gyroscope), without saving to
+flash, then reads them back (`FF AA 27 03 00`, `FF AA 27 23 00`, `FF AA 27 24 00`) into
+`linkStats`. Writing the installation did not change the reported accelerations: lying flat,
+the sensor read gravity on Z with register `0x23` read back as `1` (2026-10-21); keep the
+default and interpret the axes in the app when only raw data is used. The installation and the algorithm are written even at their defaults: the
+sensor keeps the last value written, even by another app. Register `0x24` is not in the
+WT9011DCL-BT50 protocol at hand; its values come from WitMotion's standard protocol
+(see References) and are confirmed by the read-back on the sensor. Calibration uses register
 `0x01` (`1` accelerometer, `7` magnetic field, `0` end) followed by a save
 (`FF AA 00 00 00`). The battery level is register `0x64`, read every minute with
 `FF AA 27 64 00` (no unlock); the `55 71` reply carries the voltage in 0.01 V, mapped to a
@@ -98,8 +114,13 @@ issued while another one is in flight.
 From 50 Hz on, the sensor sends a notification about every 40 ms and packs the frames
 sampled meanwhile into it: 2 at 50 Hz, 4 at 100 Hz (the manual: "50Hz~200Hz data package
 transmission"; the MTU of 247 the sensor requests leaves room for them). The library makes
-one sample per `55 61` frame and dates the frames of a notification one sampling period
-apart, the last one at reception, never before the previous sample. Up to 0.2.3 it merged a
+one sample per `55 61` frame and dates it on a regular clock: the previous sample plus one
+sampling period, pulled an eighth of the way toward the time its arrival implies (the last
+frame of a notification at reception, each earlier one a period before), at least half a
+period after the previous sample, and restarted at the arrival times after a link gap of over
+250 ms. Arrival jitter does not show and the clock still follows the sensor's actual rate.
+Up to 0.2.5 the last frame was dated at reception, which repeated timestamps (1 to 18 % of
+the samples at 50 to 200 Hz). Up to 0.2.3 it merged a
 notification into a single sample, so every rate from 50 Hz up gave 25 Hz (measured on a
 Galaxy S22, 2026-10-20).
 
@@ -135,6 +156,9 @@ JDK 21, AGP 9.4.1, Kotlin 2.4.21, compileSdk 36, minSdk 26.
 - [`Bwt901bleProcessor.cs` (C# SDK)](https://github.com/WITMOTION/WitBluetooth_BWT901BLE5_0/blob/9efaab0fdd6a06dc807bf80402e58aa91b431c6f/Windows_C%23/Wit.Example_BWT901BLE/ble5/Components/Bwt901bleProcessor.cs#L80-L107)
   — WitMotion's own clients poll registers `0x3A` (magnetic field), `0x51` (quaternion),
   `0x30` (time), and `0x64` / `0x40` (battery, temperature) in a loop.
+- [WIT standard communication protocol (gitbook)](https://wit-motion.gitbook.io/witmotion-sdk/wit-standard-protocol/wit-standard-communication-protocol)
+  — register `0x24` AXIS6: `0` 9-axis (magnetic heading, absolute), `1` 6-axis (integrated
+  heading, relative), example `FF AA 24 01 00`; register `0x23` ORIENT as used here.
 - [WitMotion BLE 5.0 protocol (gitbook)](https://wit-motion.gitbook.io/witmotion-sdk/ble-5.0-protocol/bluetooth-5.0-communication-protocol.md)
   — register read `FF AA 27 XX 00`, `55 71` reply (start register + 8 registers).
 - [RGu0/WT901](https://github.com/RGu0/WT901) — Python library tested on a WT901BLE67:

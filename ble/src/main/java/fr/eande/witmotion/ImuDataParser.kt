@@ -146,24 +146,45 @@ object ImuDataParser {
     /**
      * Splits the packets of one notification into samples: a packet type seen again starts a
      * new sample, so each packed 55 61 frame is its own sample while legacy packets (acceleration,
-     * gyro and angle sent separately) still make one. The last sample gets [receivedAt] and each
-     * earlier one [periodMs] less, as the sensor sampled them, never before [notBefore].
+     * gyro and angle sent separately) still make one.
+     *
+     * Timestamps follow a regular clock: each sample is [previous] plus [periodMs], pulled an
+     * eighth of the way toward the time its arrival implies (the last sample at [receivedAt],
+     * each earlier one a period before), so arrival jitter does not show while the clock still
+     * tracks the sensor's actual rate. Samples are at least half a period apart. After a link gap
+     * (the clock more than [GAP_MS] behind) the clock restarts at the arrival times. Without a
+     * [previous] sample, the arrival times are used as they are.
      */
     fun packetsToSamples(
         packets: List<ParsedPacket>,
         receivedAt: Long,
         periodMs: Long,
-        notBefore: Long = Long.MIN_VALUE
+        previous: Long = Long.MIN_VALUE
     ): List<ImuSample> {
         val groups = mutableListOf<MutableList<ParsedPacket>>()
         for (p in packets) {
             val current = groups.lastOrNull()
             if (current == null || current.any { it.type == p.type }) groups.add(mutableListOf(p)) else current.add(p)
         }
+        var last = previous
         return groups.mapIndexed { i, group ->
-            packetsToSample(group, maxOf(receivedAt - (groups.size - 1 - i) * periodMs, notBefore))
+            val arrival = receivedAt - (groups.size - 1 - i) * periodMs
+            val t = if (last == Long.MIN_VALUE || arrival - (last + periodMs) > GAP_MS) {
+                maxOf(arrival, if (last == Long.MIN_VALUE) Long.MIN_VALUE else last + 1)
+            } else {
+                val regular = last + periodMs
+                maxOf(regular + (arrival - regular) / CLOCK_PULL, last + maxOf(1, periodMs / 2))
+            }
+            last = t
+            packetsToSample(group, t)
         }
     }
+
+    /** Fraction of the gap to the arrival time each sample closes. */
+    private const val CLOCK_PULL = 8
+
+    /** Behind the arrival by more than this, the clock restarts: the link dropped. */
+    private const val GAP_MS = 250L
 
     /**
      * Merge parsed packets into an ImuSample with the given timestamp.

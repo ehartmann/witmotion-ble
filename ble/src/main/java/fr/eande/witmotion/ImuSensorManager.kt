@@ -46,6 +46,10 @@ import java.util.concurrent.CopyOnWriteArrayList
 class ImuSensorManager(private val context: Context) {
 
     companion object {
+        /** One filter per valid address; the others are dropped. */
+        fun scanFilters(addresses: Collection<String>): List<ScanFilter> =
+            addresses.filter(BluetoothAdapter::checkBluetoothAddress).map { ScanFilter.Builder().setDeviceAddress(it).build() }
+
         private const val TAG = "ImuSensorManager"
         private const val DEVICE_NAME_PREFIX = "WT"
 
@@ -70,6 +74,8 @@ class ImuSensorManager(private val context: Context) {
         val READ_RATE = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_OUTPUT_RATE.toByte(), 0x00)
         private const val REG_INSTALLATION = 0x23
         val READ_INSTALLATION = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_INSTALLATION.toByte(), 0x00)
+        private const val REG_ALGORITHM = 0x24
+        val READ_ALGORITHM = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_ALGORITHM.toByte(), 0x00)
     }
 
     // State
@@ -99,7 +105,9 @@ class ImuSensorManager(private val context: Context) {
         /** Register 0x03 read back after setting the rate; see [OutputRate.fromCode]. */
         val outputRateCode: Int? = null,
         /** Register 0x23 read back after setting the installation; see [Installation.fromCode]. */
-        val installationCode: Int? = null
+        val installationCode: Int? = null,
+        /** Register 0x24 read back after setting the algorithm; see [Algorithm.fromCode]. */
+        val algorithmCode: Int? = null
     )
 
     private val _linkStats = MutableStateFlow(LinkStats())
@@ -159,7 +167,8 @@ class ImuSensorManager(private val context: Context) {
 
     // --- Scanning ---
 
-    fun startScan() {
+    /** Scans for every WitMotion sensor, or only for [addresses]: Android pauses an unfiltered scan while the screen is off. */
+    fun startScan(addresses: Collection<String>? = null) {
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bluetoothManager?.adapter ?: run {
             Log.e(TAG, "Bluetooth not available")
@@ -184,7 +193,7 @@ class ImuSensorManager(private val context: Context) {
             .build()
 
         try {
-            scanner.startScan(null, settings, scanCallback)
+            scanner.startScan(addresses?.let(::scanFilters)?.ifEmpty { null }, settings, scanCallback)
         } catch (e: SecurityException) {
             Log.e(TAG, "BLE scan denied (missing runtime permission?)", e)
             isScanning = false
@@ -463,6 +472,11 @@ class ImuSensorManager(private val context: Context) {
                 Log.d(TAG, "Installation register: 0x%02X (%s)".format(code, Installation.fromCode(code) ?: "?"))
                 _linkStats.update { it.copy(installationCode = code) }
             }
+            registers.firstOrNull { it.startRegister == REG_ALGORITHM }?.let { reply ->
+                val code = reply.values[0]
+                Log.d(TAG, "Algorithm register: 0x%02X (%s)".format(code, Algorithm.fromCode(code) ?: "?"))
+                _linkStats.update { it.copy(algorithmCode = code) }
+            }
             _linkStats.update {
                 it.copy(
                     notifications = it.notifications + 1,
@@ -536,8 +550,23 @@ class ImuSensorManager(private val context: Context) {
     /** Sets [installation], then reads register 0x23 back into [linkStats]. */
     fun configureInstallation() = sendCommands(installation.command, READ_INSTALLATION)
 
-    /** On connect: [outputRate] and [installation] under one unlock, both read back. */
-    private fun applySettings() = sendCommands(outputRate.command, installation.command, READ_RATE, READ_INSTALLATION)
+    /**
+     * 6 or 9-axis heading, written on every connect and at once when changed while connected,
+     * like [installation]. Not saved to the sensor's flash.
+     */
+    @Volatile
+    var algorithm: Algorithm = Algorithm.AXIS_9
+        set(value) {
+            field = value
+            if (isConnected()) configureAlgorithm()
+        }
+
+    /** Sets [algorithm], then reads register 0x24 back into [linkStats]. */
+    fun configureAlgorithm() = sendCommands(algorithm.command, READ_ALGORITHM)
+
+    /** On connect: [outputRate], [installation] and [algorithm] under one unlock, all read back. */
+    private fun applySettings() =
+        sendCommands(outputRate.command, installation.command, algorithm.command, READ_RATE, READ_INSTALLATION, READ_ALGORITHM)
 
     /**
      * Makes [ImuSample.timestamp] relative to now; until called, timestamps are
@@ -566,4 +595,6 @@ class ImuSensorManager(private val context: Context) {
     }
 
     fun isConnected(): Boolean = _connectionState.value == ConnectionState.CONNECTED
+
+    fun isConnecting(): Boolean = _connectionState.value == ConnectionState.CONNECTING
 }
