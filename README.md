@@ -58,11 +58,21 @@ files to `build/release-repo/`.
 val sensor = ImuSensorManager(context)
 sensor.addSampleListener { sample -> /* BLE thread */ }
 sensor.startScan()                      // discoveredDevices: StateFlow
+sensor.startScan(addresses)             // only these sensors: Android pauses an unfiltered scan, screen off
 sensor.connect(device)                  // connectionState, batteryLevel, lastSample
 sensor.outputRate = OutputRate.HZ_100   // set on every connect, at once if connected
 sensor.installation = Installation.VERTICAL  // likewise: standing sensor, Y arrow up
                                         // linkStats: frame counts, negotiated interval, rate read back
+
+val connector = ImuAutoConnector(sensor, RegisteredImuStore(prefs), scope)
+connector.tryAutoConnect()                     // first registered sensor that answers a 5 s scan
+connector.tryAutoConnect(onlyIfSingle = true)  // only when a single registered sensor answers
+                                               // returns the attempt (or the one in flight), null when
+                                               // connected, connecting or nothing is registered
 ```
+
+`ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect. Its
+scans are filtered on the registered sensors, so they keep running with the screen off.
 
 The app requests the runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
 API 31+, `ACCESS_FINE_LOCATION` below); the library manifest declares them.
@@ -86,7 +96,9 @@ and sent 100 ms apart, as the SDK does. On connect the library sets register `0x
 axis arrow up) and register `0x24` (algorithm) to `algorithm` (`0`, 9-axis, magnetometer
 heading, by default; `1`, 6-axis, heading integrated from the gyroscope), without saving to
 flash, then reads them back (`FF AA 27 03 00`, `FF AA 27 23 00`, `FF AA 27 24 00`) into
-`linkStats`. The installation and the algorithm are written even at their defaults: the
+`linkStats`. Writing the installation did not change the reported accelerations: lying flat,
+the sensor read gravity on Z with register `0x23` read back as `1` (2026-10-21); keep the
+default and interpret the axes in the app when only raw data is used. The installation and the algorithm are written even at their defaults: the
 sensor keeps the last value written, even by another app. Register `0x24` is not in the
 WT9011DCL-BT50 protocol at hand; its values come from WitMotion's standard protocol
 (see References) and are confirmed by the read-back on the sensor. Calibration uses register
@@ -102,8 +114,13 @@ issued while another one is in flight.
 From 50 Hz on, the sensor sends a notification about every 40 ms and packs the frames
 sampled meanwhile into it: 2 at 50 Hz, 4 at 100 Hz (the manual: "50Hz~200Hz data package
 transmission"; the MTU of 247 the sensor requests leaves room for them). The library makes
-one sample per `55 61` frame and dates the frames of a notification one sampling period
-apart, the last one at reception, never before the previous sample. Up to 0.2.3 it merged a
+one sample per `55 61` frame and dates it on a regular clock: the previous sample plus one
+sampling period, pulled an eighth of the way toward the time its arrival implies (the last
+frame of a notification at reception, each earlier one a period before), at least half a
+period after the previous sample, and restarted at the arrival times after a link gap of over
+250 ms. Arrival jitter does not show and the clock still follows the sensor's actual rate.
+Up to 0.2.5 the last frame was dated at reception, which repeated timestamps (1 to 18 % of
+the samples at 50 to 200 Hz). Up to 0.2.3 it merged a
 notification into a single sample, so every rate from 50 Hz up gave 25 Hz (measured on a
 Galaxy S22, 2026-10-20).
 
