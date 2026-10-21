@@ -71,7 +71,7 @@ class ImuAutoConnector(
                 }
             }
         }
-        sensorManager.startScan()
+        sensorManager.startScan(store.getAll().map { it.address })
         delay(SCAN_DURATION_MS)
         sensorManager.onDeviceDiscovered = null
         if (onlyIfSingle) {
@@ -87,20 +87,21 @@ class ImuAutoConnector(
     }
 
     /**
-     * One scan-and-connect attempt, unless connected or an attempt is already in flight (a
-     * caller retrying on a timer must not cut a reconnect short).
+     * One scan-and-connect attempt, unless connected; an attempt already in flight (a reconnect
+     * a caller on a timer must not cut short) is returned instead of a new one. Null when there
+     * is nothing to attempt.
      */
-    fun tryAutoConnect(onlyIfSingle: Boolean = false) {
-        if (sensorManager.isConnected()) return
-        if (store.getAll().isEmpty()) return
-        if (autoConnectJob?.isActive == true) return
+    fun tryAutoConnect(onlyIfSingle: Boolean = false): Job? {
+        if (sensorManager.isConnected()) return null
+        if (store.getAll().isEmpty()) return null
+        autoConnectJob?.takeIf { it.isActive }?.let { return it }
 
-        autoConnectJob = scope.launch {
+        return scope.launch {
             Log.d(TAG, "Starting auto-connect scan...")
             if (!attemptConnect(onlyIfSingle)) {
                 Log.d(TAG, "Auto-connect scan finished — no device connected")
             }
-        }
+        }.also { autoConnectJob = it }
     }
 
     /**

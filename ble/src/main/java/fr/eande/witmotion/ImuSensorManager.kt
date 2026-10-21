@@ -14,6 +14,7 @@ import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
+import android.app.PendingIntent
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
@@ -46,6 +47,10 @@ import java.util.concurrent.CopyOnWriteArrayList
 class ImuSensorManager(private val context: Context) {
 
     companion object {
+        /** One filter per valid address; the others are dropped. */
+        fun scanFilters(addresses: Collection<String>): List<ScanFilter> =
+            addresses.filter(BluetoothAdapter::checkBluetoothAddress).map { ScanFilter.Builder().setDeviceAddress(it).build() }
+
         private const val TAG = "ImuSensorManager"
         private const val DEVICE_NAME_PREFIX = "WT"
 
@@ -163,7 +168,8 @@ class ImuSensorManager(private val context: Context) {
 
     // --- Scanning ---
 
-    fun startScan() {
+    /** Scans for every WitMotion sensor, or only for [addresses]: Android pauses an unfiltered scan while the screen is off. */
+    fun startScan(addresses: Collection<String>? = null) {
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bluetoothManager?.adapter ?: run {
             Log.e(TAG, "Bluetooth not available")
@@ -188,7 +194,7 @@ class ImuSensorManager(private val context: Context) {
             .build()
 
         try {
-            scanner.startScan(null, settings, scanCallback)
+            scanner.startScan(addresses?.let(::scanFilters)?.ifEmpty { null }, settings, scanCallback)
         } catch (e: SecurityException) {
             Log.e(TAG, "BLE scan denied (missing runtime permission?)", e)
             isScanning = false
@@ -200,6 +206,40 @@ class ImuSensorManager(private val context: Context) {
         // Auto-stop after timeout (handler is reusable and cancelable)
         mainHandler.removeCallbacks(scanTimeoutRunnable)
         mainHandler.postDelayed(scanTimeoutRunnable, SCAN_TIMEOUT_MS)
+    }
+
+    /**
+     * A scan the system keeps for [addresses], reporting to [callback] (see BluetoothLeScanner's
+     * EXTRA_LIST_SCAN_RESULT) when one of them appears, with the screen off or the app in the
+     * background or not running. False without Bluetooth, permission or a valid address.
+     */
+    fun startBackgroundScan(addresses: Collection<String>, callback: PendingIntent): Boolean {
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.takeIf { it.isEnabled } ?: return false
+        val scanner = adapter.bluetoothLeScanner ?: return false
+        val filters = scanFilters(addresses).ifEmpty { return false }
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
+            // Without offloaded filtering FIRST_MATCH fails; ALL_MATCHES then reports every few seconds
+            .setCallbackType(if (adapter.isOffloadedFilteringSupported) ScanSettings.CALLBACK_TYPE_FIRST_MATCH else ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .build()
+        return try {
+            // A scan left by an earlier process holds the same PendingIntent: replace it rather than stack a second one
+            scanner.stopScan(callback)
+            (scanner.startScan(filters, settings, callback) == 0).also { Log.d(TAG, "Background scan for ${filters.size} sensor(s): $it") }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Background scan denied", e)
+            false
+        }
+    }
+
+    fun stopBackgroundScan(callback: PendingIntent) {
+        val scanner = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.bluetoothLeScanner ?: return
+        try {
+            scanner.stopScan(callback)
+            Log.d(TAG, "Background scan stopped")
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Background stopScan denied", e)
+        }
     }
 
     fun stopScan() {

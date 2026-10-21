@@ -73,7 +73,7 @@ class ImuAutoConnectorTest {
         advanceTimeBy(fullRetrySequenceMs)
         runCurrent()
 
-        verify(exactly = 0) { sensorManager.startScan() }
+        verify(exactly = 0) { sensorManager.startScan(any()) }
     }
 
     @Test
@@ -85,7 +85,7 @@ class ImuAutoConnectorTest {
         advanceTimeBy(fullRetrySequenceMs)
         runCurrent()
 
-        verify(exactly = 0) { sensorManager.startScan() }
+        verify(exactly = 0) { sensorManager.startScan(any()) }
     }
 
     @Test
@@ -102,7 +102,7 @@ class ImuAutoConnectorTest {
         advanceTimeBy(fullRetrySequenceMs)
         runCurrent()
 
-        verify(exactly = 3) { sensorManager.startScan() }
+        verify(exactly = 3) { sensorManager.startScan(any()) }
         assertThat(events).containsExactly(
             ImuAutoConnector.ReconnectEvent.Started,
             ImuAutoConnector.ReconnectEvent.Exhausted
@@ -141,7 +141,7 @@ class ImuAutoConnectorTest {
         advanceTimeBy(fullRetrySequenceMs)
         runCurrent()
 
-        verify(atLeast = 1) { sensorManager.startScan() }
+        verify(atLeast = 1) { sensorManager.startScan(any()) }
     }
 
     @Test
@@ -192,6 +192,37 @@ class ImuAutoConnectorTest {
         connector.tryAutoConnect(onlyIfSingle = true)
         runCurrent()
 
-        verify(exactly = 1) { sensorManager.startScan() }
+        verify(exactly = 1) { sensorManager.startScan(any()) }
+    }
+
+    @Test
+    fun `auto-connect scans only for the registered sensors, so it works with the screen off`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        store.register("11:22:33:44:55:66", "WT901BLE67")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.tryAutoConnect()
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.startScan(match { it?.toSet() == setOf("AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66") }) }
+    }
+
+    @Test
+    fun `tryAutoConnect returns the attempt for a caller to wait on`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        val attempt = connector.tryAutoConnect()
+        runCurrent()
+        assertThat(attempt!!.isActive).isTrue()
+        assertThat(connector.tryAutoConnect()).isSameInstanceAs(attempt)
+        advanceTimeBy(6_000)
+        runCurrent()
+
+        assertThat(attempt.isCompleted).isTrue()
+        every { sensorManager.isConnected() } returns true
+        assertThat(connector.tryAutoConnect()).isNull()
     }
 }
