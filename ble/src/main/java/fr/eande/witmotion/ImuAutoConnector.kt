@@ -87,12 +87,12 @@ class ImuAutoConnector(
     }
 
     /**
-     * One scan-and-connect attempt, unless connected; an attempt already in flight (a reconnect
+     * One scan-and-connect attempt, unless connected or connecting; an attempt already in flight (a reconnect
      * a caller on a timer must not cut short) is returned instead of a new one. Null when there
      * is nothing to attempt.
      */
     fun tryAutoConnect(onlyIfSingle: Boolean = false): Job? {
-        if (sensorManager.isConnected()) return null
+        if (sensorManager.isConnected() || sensorManager.isConnecting()) return null
         if (store.getAll().isEmpty()) return null
         autoConnectJob?.takeIf { it.isActive }?.let { return it }
 

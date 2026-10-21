@@ -225,4 +225,17 @@ class ImuAutoConnectorTest {
         every { sensorManager.isConnected() } returns true
         assertThat(connector.tryAutoConnect()).isNull()
     }
+
+    @Test
+    fun `tryAutoConnect does nothing while a connection is being set up`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        every { sensorManager.isConnecting() } returns true
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        assertThat(connector.tryAutoConnect(onlyIfSingle = true)).isNull()
+        runCurrent()
+
+        verify(exactly = 0) { sensorManager.startScan(any()) }
+    }
 }

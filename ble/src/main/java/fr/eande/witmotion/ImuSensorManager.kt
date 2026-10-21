@@ -595,4 +595,6 @@ class ImuSensorManager(private val context: Context) {
     }
 
     fun isConnected(): Boolean = _connectionState.value == ConnectionState.CONNECTED
+
+    fun isConnecting(): Boolean = _connectionState.value == ConnectionState.CONNECTING
 }
