@@ -315,3 +315,88 @@ class ImuDataParserTest {
         }
     }
 }
+
+class ImuDataParserTimestampTest {
+
+    /** [padding] 0 gives the 18-byte layout of the protocol table, 2 the 20-byte one. */
+    private fun timestampFrame(ms: Long, padding: Int, ax: Short = 0): ByteArray {
+        val frame = ByteArray(18 + padding)
+        frame[0] = 0x55
+        frame[1] = 0x61
+        frame[2] = (ax.toInt() and 0xFF).toByte()
+        frame[3] = (ax.toInt() shr 8 and 0xFF).toByte()
+        for (i in 0..3) frame[14 + i] = (ms shr (8 * i) and 0xFF).toByte()
+        return frame
+    }
+
+    private fun sensorTimes(notification: ByteArray) =
+        ImuDataParser.parseCounting(notification, timestamps = true).packets.mapNotNull { it.sensorMs }
+
+    @Test
+    fun `four 18-byte timestamp frames in one notification`() {
+        val notification = (0L..3L).map { timestampFrame(1_000 + it * 5, 0) }.reduce(ByteArray::plus)
+        val parsed = ImuDataParser.parseCounting(notification, timestamps = true)
+
+        assertThat(parsed.packets.mapNotNull { it.sensorMs }).containsExactly(1000L, 1005L, 1010L, 1015L).inOrder()
+        assertThat(parsed.counts.combined).isEqualTo(4)
+        assertThat(parsed.counts.timestampFrameSize).isEqualTo(18)
+        assertThat(parsed.counts.skippedBytes).isEqualTo(0)
+    }
+
+    @Test
+    fun `four 20-byte timestamp frames in one notification`() {
+        val notification = (0L..3L).map { timestampFrame(1_000 + it * 5, 2) }.reduce(ByteArray::plus)
+        val parsed = ImuDataParser.parseCounting(notification, timestamps = true)
+
+        assertThat(parsed.packets.mapNotNull { it.sensorMs }).containsExactly(1000L, 1005L, 1010L, 1015L).inOrder()
+        assertThat(parsed.counts.timestampFrameSize).isEqualTo(20)
+        assertThat(parsed.counts.skippedBytes).isEqualTo(0)
+    }
+
+    @Test
+    fun `a single frame of either length`() {
+        assertThat(sensorTimes(timestampFrame(42, 0))).containsExactly(42L)
+        assertThat(sensorTimes(timestampFrame(42, 2))).containsExactly(42L)
+    }
+
+    @Test
+    fun `the counter is unsigned above 2^31`() {
+        assertThat(sensorTimes(timestampFrame(0xFFFF_FFF0L, 0))).containsExactly(0xFFFF_FFF0L)
+    }
+
+    @Test
+    fun `acceleration is still decoded and each frame becomes a sample carrying its counter`() {
+        val notification = timestampFrame(500, 0, ax = 2048) + timestampFrame(505, 0, ax = 2048)
+        val samples = ImuDataParser.packetsToSamples(
+            ImuDataParser.parseCounting(notification, timestamps = true).packets, receivedAt = 1_000, periodMs = 5
+        )
+
+        assertThat(samples.map { it.sensorTimeMs }).containsExactly(500L, 505L).inOrder()
+        assertThat(samples[0].acceleration!![0]).isWithin(1e-4f).of(1f)
+        assertThat(samples[0].euler).isNull()
+    }
+
+    @Test
+    fun `without the timestamp mode the same header is a normal frame`() {
+        val parsed = ImuDataParser.parseCounting(timestampFrame(500, 2))
+
+        assertThat(parsed.packets.mapNotNull { it.sensorMs }).isEmpty()
+        assertThat(parsed.packets.map { it.type }).contains(ImuDataParser.TYPE_EULER)
+    }
+
+    @Test
+    fun `a register reply is still decoded in timestamp mode`() {
+        val reply = byteArrayOf(0x55, 0x71, 0x1F, 0x00, 0x03, 0x00) + ByteArray(14)
+        val parsed = ImuDataParser.parseCounting(timestampFrame(1, 0) + reply, timestamps = true)
+
+        assertThat(parsed.registers.single().startRegister).isEqualTo(0x1F)
+        assertThat(parsed.registers.single().values[0]).isEqualTo(3)
+    }
+
+    @Test
+    fun `an angle frame arriving in timestamp mode does not crash the parser`() {
+        val angleStream = ByteArray(20) { if (it == 0) 0x55 else if (it == 1) 0x61 else 0x11 }
+
+        ImuDataParser.parseCounting(angleStream + angleStream, timestamps = true)
+    }
+}
