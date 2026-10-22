@@ -17,7 +17,7 @@ enum class Bandwidth(val hz: Int, val code: Int) {
         /** Bits 15:4 of the register are reserved, so only the low nibble is read. */
         fun fromCode(code: Int): Bandwidth? = entries.firstOrNull { it.code == code and 0x0F }
 
-        /** The highest cut-off under half the output rate: 98 Hz at 200 Hz, 42 Hz at 100 Hz, 20 Hz below. */
+        /** 98 Hz from a 200 Hz output rate up, 42 Hz from 100 Hz, 20 Hz (the sensor's default) below. */
         fun suggestedFor(rateHz: Int): Bandwidth = when {
             rateHz >= 200 -> HZ_98
             rateHz >= 100 -> HZ_42

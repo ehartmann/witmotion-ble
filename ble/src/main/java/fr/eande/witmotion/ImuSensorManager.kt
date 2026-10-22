@@ -78,6 +78,12 @@ class ImuSensorManager(private val context: Context) {
         val READ_BANDWIDTH = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_BANDWIDTH.toByte(), 0x00)
         private const val REG_ALGORITHM = 0x24
         val READ_ALGORITHM = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_ALGORITHM.toByte(), 0x00)
+
+        /** The commands sent after the unlock on every connect: the angles first, so a sensor left on timestamps stops at once. */
+        internal fun settingsCommands(rate: OutputRate, installation: Installation, algorithm: Algorithm, bandwidth: Bandwidth) = listOf(
+            OutputContent.ANGLES.command, rate.command, installation.command, algorithm.command, bandwidth.command,
+            READ_RATE, READ_INSTALLATION, READ_ALGORITHM, READ_BANDWIDTH
+        )
     }
 
     // State
@@ -257,6 +263,7 @@ class ImuSensorManager(private val context: Context) {
     // --- Connection ---
 
     fun connect(device: ImuSensorDevice) {
+        clockChecks.abort()
         stopScan()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.CONNECTING
@@ -315,6 +322,7 @@ class ImuSensorManager(private val context: Context) {
     }
 
     fun disconnect() {
+        clockChecks.abort()
         userInitiatedDisconnect = true
         gatt?.disconnect()
         gatt?.close()
@@ -338,6 +346,7 @@ class ImuSensorManager(private val context: Context) {
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.d(TAG, "Disconnected (status=$status)")
+                    clockChecks.abort()
                     _connectionState.value = ConnectionState.DISCONNECTED
                     _connectedDevice.value = null
                     writeCharacteristic = null
@@ -461,7 +470,7 @@ class ImuSensorManager(private val context: Context) {
         }
 
         private fun deliverNotify(data: ByteArray) {
-            val check = clockCollector
+            val check = clockChecks.collector
             val (packets, counts, registers) = ImuDataParser.parseCounting(data, timestamps = check != null)
             if (check != null) {
                 check.add(packets.mapNotNull { it.sensorMs }, SystemClock.elapsedRealtime())
@@ -598,15 +607,13 @@ class ImuSensorManager(private val context: Context) {
 
     /**
      * On connect: [outputRate], [installation], [algorithm] and [bandwidth] under one unlock, all
-     * read back, and the output content back to the angles: a clock check cut short (app killed,
-     * link lost) leaves the sensor on timestamps, which would otherwise outlive the app.
+     * read back, the output content first: a clock check cut short (app killed, link lost) leaves
+     * the sensor on timestamps, which would otherwise outlive the app.
      */
-    private fun applySettings() = sendCommands(
-        outputRate.command, installation.command, algorithm.command, bandwidth.command, OutputContent.ANGLES.command,
-        READ_RATE, READ_INSTALLATION, READ_ALGORITHM, READ_BANDWIDTH
-    )
+    private fun applySettings() =
+        sendCommands(*settingsCommands(outputRate, installation, algorithm, bandwidth).toTypedArray())
 
-    @Volatile private var clockCollector: ClockCollector? = null
+    private val clockChecks = ClockCheckSlot()
     @Volatile private var timestampSizeLogged = false
 
     /**
@@ -617,20 +624,17 @@ class ImuSensorManager(private val context: Context) {
      * While it runs, samples carry [ImuSample.sensorTimeMs] and no Euler angles, and for about
      * half a second after the end the angles are still absent. The manager cannot tell which
      * sample listener records, so the caller must not record during a check. Needs a connected
-     * sensor, and one check at a time.
+     * sensor, and one check at a time. A disconnect or a new connect ends the check at once with
+     * [ClockCheckResult.aborted] set; the sensor gets the angles back on the next connect.
      */
     suspend fun runClockCheck(durationMs: Long = 30_000): ClockCheckResult {
         check(isConnected()) { "Not connected" }
-        val collector = ClockCollector()
-        synchronized(this) {
-            check(clockCollector == null) { "A clock check is already running" }
-            clockCollector = collector
-        }
+        val collector = clockChecks.begin()
         timestampSizeLogged = false
         try {
             return ClockCheck.run(durationMs, collector, { sendCommands(it.command) })
         } finally {
-            clockCollector = null
+            clockChecks.end(collector)
         }
     }
 
