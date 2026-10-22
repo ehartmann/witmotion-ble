@@ -263,10 +263,10 @@ class ImuSensorManager(private val context: Context) {
     // --- Connection ---
 
     fun connect(device: ImuSensorDevice) {
-        clockChecks.abort()
         stopScan()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.CONNECTING
+        clockChecks.abort()
 
         gatt?.let { old ->
             try {
@@ -322,7 +322,6 @@ class ImuSensorManager(private val context: Context) {
     }
 
     fun disconnect() {
-        clockChecks.abort()
         userInitiatedDisconnect = true
         gatt?.disconnect()
         gatt?.close()
@@ -331,11 +330,12 @@ class ImuSensorManager(private val context: Context) {
         gattOps.clear()
         mainHandler.removeCallbacks(batteryRefresh)
         _connectionState.value = ConnectionState.DISCONNECTED
+        clockChecks.abort()
         _connectedDevice.value = null
         Log.d(TAG, "Disconnected")
     }
 
-    private val gattCallback = object : BluetoothGattCallback() {
+    internal val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
@@ -346,8 +346,9 @@ class ImuSensorManager(private val context: Context) {
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.d(TAG, "Disconnected (status=$status)")
-                    clockChecks.abort()
                     _connectionState.value = ConnectionState.DISCONNECTED
+                    // not a late callback from a GATT that connect() already replaced
+                    if (this@ImuSensorManager.gatt.let { it == null || it == gatt }) clockChecks.abort()
                     _connectedDevice.value = null
                     writeCharacteristic = null
                     gattOps.clear()
@@ -613,7 +614,7 @@ class ImuSensorManager(private val context: Context) {
     private fun applySettings() =
         sendCommands(*settingsCommands(outputRate, installation, algorithm, bandwidth).toTypedArray())
 
-    private val clockChecks = ClockCheckSlot()
+    internal val clockChecks = ClockCheckSlot()
     @Volatile private var timestampSizeLogged = false
 
     /**
