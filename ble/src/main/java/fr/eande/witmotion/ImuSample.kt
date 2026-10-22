@@ -12,7 +12,8 @@ data class ImuSample(
     val acceleration: FloatArray? = null,  // [ax, ay, az] in g
     val gyroscope: FloatArray? = null,     // [wx, wy, wz] in °/s
     val euler: FloatArray? = null,         // [roll, pitch, yaw] in °
-    val quaternion: FloatArray? = null     // [q0, q1, q2, q3]
+    val quaternion: FloatArray? = null,    // [q0, q1, q2, q3]
+    val sensorTimeMs: Long? = null         // the sensor's own counter, only during a clock check
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

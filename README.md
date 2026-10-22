@@ -62,7 +62,9 @@ sensor.startScan(addresses)             // only these sensors: Android pauses an
 sensor.connect(device)                  // connectionState, batteryLevel, lastSample
 sensor.outputRate = OutputRate.HZ_100   // set on every connect, at once if connected
 sensor.installation = Installation.VERTICAL  // likewise: standing sensor, Y arrow up
+sensor.bandwidth = Bandwidth.suggestedFor(100)  // likewise: filter cut-off (register 0x1F), 20 Hz by default
                                         // linkStats: frame counts, negotiated interval, rate read back
+val check = sensor.runClockCheck()      // suspend, 30 s: sensor clock rate, drift against the phone, lost frames
 
 val connector = ImuAutoConnector(sensor, RegisteredImuStore(prefs), scope)
 connector.tryAutoConnect()                     // first registered sensor that answers a 5 s scan
@@ -70,6 +72,15 @@ connector.tryAutoConnect(onlyIfSingle = true)  // only when a single registered 
                                                // returns the attempt (or the one in flight), null when
                                                // connected, connecting or nothing is registered
 ```
+
+`runClockCheck` switches the 0x61 frames to the sensor's millisecond counter (register `0x96` = 2)
+for the duration, which **replaces the Euler angles**: samples carry `sensorTimeMs` and no `euler`,
+and the angles stay absent for about half a second after the end. The manager cannot tell which
+listener records, so the app must not record during a check. The angles are restored in a
+`finally` (error, cancellation) and `0x96` = 0 is written on every connect, so a check cut short
+never leaves the sensor without angles. A disconnect or a new connect during a check ends it at
+once, with `aborted` set in the result. The timestamp frame length (18 bytes in the protocol
+table, maybe 20) is detected and logged (`Timestamp frames are N bytes`).
 
 `ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect. Its
 scans are filtered on the registered sensors, so they keep running with the screen off.
@@ -96,10 +107,14 @@ and sent 100 ms apart, as the SDK does. On connect the library sets register `0x
 axis arrow up) and register `0x24` (algorithm) to `algorithm` (`0`, 9-axis, magnetometer
 heading, by default; `1`, 6-axis, heading integrated from the gyroscope), without saving to
 flash, then reads them back (`FF AA 27 03 00`, `FF AA 27 23 00`, `FF AA 27 24 00`) into
-`linkStats`. Writing the installation did not change the reported accelerations: lying flat,
+`linkStats`. Register `0x1F` (accelerometer and gyroscope filter cut-off: 256, 188, 98, 42, 20,
+10 or 5 Hz, `20` by default, `FF AA 1F <0-6> 00`) is written the same way from `bandwidth`;
+the protocol does not document reading it back, so `linkStats.bandwidthCode` may stay null.
+
+Writing the installation did not change the reported accelerations: lying flat,
 the sensor read gravity on Z with register `0x23` read back as `1` (2026-10-21); keep the
-default and interpret the axes in the app when only raw data is used. The installation and the algorithm are written even at their defaults: the
-sensor keeps the last value written, even by another app. Register `0x24` is not in the
+default and interpret the axes in the app when only raw data is used. The installation and
+the algorithm are written even at their defaults: the sensor keeps the last value written, even by another app. Register `0x24` is not in the
 WT9011DCL-BT50 protocol at hand; its values come from WitMotion's standard protocol
 (see References) and are confirmed by the read-back on the sensor. Calibration uses register
 `0x01` (`1` accelerometer, `7` magnetic field, `0` end) followed by a save

@@ -22,6 +22,10 @@ object ImuDataParser {
     /** 55 71 reply to a register read (FF AA 27 reg 00): start register + 8 register values, no checksum. */
     const val TYPE_REGISTERS = 0x71.toByte()
     const val REG_BATTERY_VOLTAGE = 0x64
+    /** Packet type for the counter of a timestamp frame; not a wire value. */
+    const val TYPE_SENSOR_TIME = 0x96.toByte()
+    /** Timestamp frame (register 0x96 = 2): `55 61` + acc + gyro + counter, 18 bytes in the protocol table. */
+    const val TIMESTAMP_FRAME_SIZE = 18
 
     const val TYPE_ACCELERATION = 0x51.toByte()
     const val TYPE_GYROSCOPE = 0x52.toByte()
@@ -34,14 +38,16 @@ object ImuDataParser {
      */
     data class ParsedPacket(
         val type: Byte,
-        val values: FloatArray
+        val values: FloatArray,
+        /** The sensor's millisecond counter, for a [TYPE_SENSOR_TIME] packet only. */
+        val sensorMs: Long? = null
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (other !is ParsedPacket) return false
-            return type == other.type && values.contentEquals(other.values)
+            return type == other.type && values.contentEquals(other.values) && sensorMs == other.sensorMs
         }
-        override fun hashCode(): Int = 31 * type.hashCode() + values.contentHashCode()
+        override fun hashCode(): Int = 31 * type.hashCode() + values.contentHashCode() + sensorMs.hashCode()
     }
 
     /**
@@ -50,8 +56,11 @@ object ImuDataParser {
      */
     fun parse(data: ByteArray): List<ParsedPacket> = parseCounting(data).packets
 
-    /** Frames found in one notification, for link diagnostics. */
-    data class FrameCounts(val combined: Int, val legacy: Int, val skippedBytes: Int)
+    /**
+     * Frames found in one notification, for link diagnostics. [timestampFrameSize] is the stride
+     * (18 or 20) of the timestamp frames found, 0 when there were none.
+     */
+    data class FrameCounts(val combined: Int, val legacy: Int, val skippedBytes: Int, val timestampFrameSize: Int = 0)
 
     /** A register-read reply: [values] are the 8 unsigned 16-bit registers from [startRegister] on. */
     data class RegisterReply(val startRegister: Int, val values: List<Int>)
@@ -65,14 +74,20 @@ object ImuDataParser {
     /**
      * Like [parse], and counts the frames per format and the bytes that were not part of a
      * valid frame (garbage, bad checksum, or a frame cut by the end of the notification).
+     *
+     * A timestamp frame has the same header as the default one, so it is only recognised when
+     * [timestamps] says the sensor was switched to it. Its length is not documented (18 bytes in
+     * the table, maybe padded to 20): the stride is 18 when the next header follows at 18 or the
+     * notification ends there, else 20.
      */
-    fun parseCounting(data: ByteArray): Parsed {
+    fun parseCounting(data: ByteArray, timestamps: Boolean = false): Parsed {
         val packets = mutableListOf<ParsedPacket>()
         val registers = mutableListOf<RegisterReply>()
         var offset = 0
         var combined = 0
         var legacy = 0
         var skipped = 0
+        var timestampStride = 0
 
         while (offset + PACKET_SIZE <= data.size) {
             if (data[offset] != HEADER) {
@@ -81,7 +96,20 @@ object ImuDataParser {
                 continue
             }
 
-            if (data[offset + 1] == TYPE_COMBINED && offset + COMBINED_PACKET_SIZE <= data.size) {
+            if (timestamps && data[offset + 1] == TYPE_COMBINED) {
+                val stride = timestampStride(data, offset)
+                if (stride > 0) {
+                    packets.add(ParsedPacket(TYPE_ACCELERATION, parseAcceleration(data, offset)))
+                    packets.add(ParsedPacket(TYPE_GYROSCOPE, parseGyroscope(data, offset + 6)))
+                    packets.add(ParsedPacket(TYPE_SENSOR_TIME, FloatArray(0), readUInt32(data, offset + 14)))
+                    offset += stride
+                    timestampStride = stride
+                    combined++
+                    continue
+                }
+            }
+
+            if (!timestamps && data[offset + 1] == TYPE_COMBINED && offset + COMBINED_PACKET_SIZE <= data.size) {
                 packets.add(ParsedPacket(TYPE_ACCELERATION, parseAcceleration(data, offset)))
                 packets.add(ParsedPacket(TYPE_GYROSCOPE, parseGyroscope(data, offset + 6)))
                 packets.add(ParsedPacket(TYPE_EULER, parseEuler(data, offset + 12)))
@@ -121,7 +149,18 @@ object ImuDataParser {
         }
 
         skipped += data.size - offset
-        return Parsed(packets, FrameCounts(combined, legacy, skipped), registers)
+        return Parsed(packets, FrameCounts(combined, legacy, skipped, timestampStride), registers)
+    }
+
+    private fun timestampStride(data: ByteArray, offset: Int): Int {
+        val rest = data.size - offset
+        val headerAt18 = rest > TIMESTAMP_FRAME_SIZE + 1 && data[offset + 18] == HEADER &&
+            (data[offset + 19] == TYPE_COMBINED || data[offset + 19] == TYPE_REGISTERS)
+        return when {
+            rest == TIMESTAMP_FRAME_SIZE || headerAt18 -> TIMESTAMP_FRAME_SIZE
+            rest >= COMBINED_PACKET_SIZE -> COMBINED_PACKET_SIZE
+            else -> 0
+        }
     }
 
     /**
@@ -194,6 +233,7 @@ object ImuDataParser {
         var gyro: FloatArray? = null
         var euler: FloatArray? = null
         var quat: FloatArray? = null
+        var sensorMs: Long? = null
 
         for (p in packets) {
             when (p.type) {
@@ -201,6 +241,7 @@ object ImuDataParser {
                 TYPE_GYROSCOPE -> gyro = p.values
                 TYPE_EULER -> euler = p.values
                 TYPE_QUATERNION -> quat = p.values
+                TYPE_SENSOR_TIME -> sensorMs = p.sensorMs
             }
         }
 
@@ -209,7 +250,8 @@ object ImuDataParser {
             acceleration = accel,
             gyroscope = gyro,
             euler = euler,
-            quaternion = quat
+            quaternion = quat,
+            sensorTimeMs = sensorMs
         )
     }
 
@@ -260,6 +302,9 @@ object ImuDataParser {
      * Read a signed 16-bit little-endian integer from the byte array.
      */
     fun readUInt16(data: ByteArray, offset: Int): Int = readInt16(data, offset).toInt() and 0xFFFF
+
+    fun readUInt32(data: ByteArray, offset: Int): Long =
+        readUInt16(data, offset).toLong() or (readUInt16(data, offset + 2).toLong() shl 16)
 
     fun readInt16(data: ByteArray, offset: Int): Short {
         val low = data[offset].toInt() and 0xFF

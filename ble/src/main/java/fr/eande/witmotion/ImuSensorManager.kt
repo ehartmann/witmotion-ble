@@ -74,8 +74,16 @@ class ImuSensorManager(private val context: Context) {
         val READ_RATE = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_OUTPUT_RATE.toByte(), 0x00)
         private const val REG_INSTALLATION = 0x23
         val READ_INSTALLATION = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_INSTALLATION.toByte(), 0x00)
+        private const val REG_BANDWIDTH = 0x1F
+        val READ_BANDWIDTH = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_BANDWIDTH.toByte(), 0x00)
         private const val REG_ALGORITHM = 0x24
         val READ_ALGORITHM = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_ALGORITHM.toByte(), 0x00)
+
+        /** The commands sent after the unlock on every connect: the angles first, so a sensor left on timestamps stops at once. */
+        internal fun settingsCommands(rate: OutputRate, installation: Installation, algorithm: Algorithm, bandwidth: Bandwidth) = listOf(
+            OutputContent.ANGLES.command, rate.command, installation.command, algorithm.command, bandwidth.command,
+            READ_RATE, READ_INSTALLATION, READ_ALGORITHM, READ_BANDWIDTH
+        )
     }
 
     // State
@@ -107,7 +115,9 @@ class ImuSensorManager(private val context: Context) {
         /** Register 0x23 read back after setting the installation; see [Installation.fromCode]. */
         val installationCode: Int? = null,
         /** Register 0x24 read back after setting the algorithm; see [Algorithm.fromCode]. */
-        val algorithmCode: Int? = null
+        val algorithmCode: Int? = null,
+        /** Register 0x1F read back after setting the bandwidth; see [Bandwidth.fromCode]. The protocol does not document this read. */
+        val bandwidthCode: Int? = null
     )
 
     private val _linkStats = MutableStateFlow(LinkStats())
@@ -256,6 +266,7 @@ class ImuSensorManager(private val context: Context) {
         stopScan()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.CONNECTING
+        clockChecks.abort()
 
         gatt?.let { old ->
             try {
@@ -319,11 +330,12 @@ class ImuSensorManager(private val context: Context) {
         gattOps.clear()
         mainHandler.removeCallbacks(batteryRefresh)
         _connectionState.value = ConnectionState.DISCONNECTED
+        clockChecks.abort()
         _connectedDevice.value = null
         Log.d(TAG, "Disconnected")
     }
 
-    private val gattCallback = object : BluetoothGattCallback() {
+    internal val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
@@ -335,6 +347,8 @@ class ImuSensorManager(private val context: Context) {
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.d(TAG, "Disconnected (status=$status)")
                     _connectionState.value = ConnectionState.DISCONNECTED
+                    // not a late callback from a GATT that connect() already replaced
+                    if (this@ImuSensorManager.gatt.let { it == null || it == gatt }) clockChecks.abort()
                     _connectedDevice.value = null
                     writeCharacteristic = null
                     gattOps.clear()
@@ -457,7 +471,15 @@ class ImuSensorManager(private val context: Context) {
         }
 
         private fun deliverNotify(data: ByteArray) {
-            val (packets, counts, registers) = ImuDataParser.parseCounting(data)
+            val check = clockChecks.collector
+            val (packets, counts, registers) = ImuDataParser.parseCounting(data, timestamps = check != null)
+            if (check != null) {
+                check.add(packets.mapNotNull { it.sensorMs }, SystemClock.elapsedRealtime())
+                if (counts.timestampFrameSize != 0 && !timestampSizeLogged) {
+                    timestampSizeLogged = true
+                    Log.i(TAG, "Timestamp frames are ${counts.timestampFrameSize} bytes, ${counts.combined} in a ${data.size}-byte notification")
+                }
+            }
             registers.firstOrNull { it.startRegister == ImuDataParser.REG_BATTERY_VOLTAGE }?.let {
                 _batteryLevel.value = ImuDataParser.batteryPercent(it.values[0])
                 Log.d(TAG, "Battery: ${it.values[0] / 100f} V, ${_batteryLevel.value}%")
@@ -471,6 +493,11 @@ class ImuSensorManager(private val context: Context) {
                 val code = reply.values[0]
                 Log.d(TAG, "Installation register: 0x%02X (%s)".format(code, Installation.fromCode(code) ?: "?"))
                 _linkStats.update { it.copy(installationCode = code) }
+            }
+            registers.firstOrNull { it.startRegister == REG_BANDWIDTH }?.let { reply ->
+                val code = reply.values[0]
+                Log.d(TAG, "Bandwidth register: 0x%02X (%s Hz)".format(code, Bandwidth.fromCode(code)?.hz ?: "?"))
+                _linkStats.update { it.copy(bandwidthCode = code) }
             }
             registers.firstOrNull { it.startRegister == REG_ALGORITHM }?.let { reply ->
                 val code = reply.values[0]
@@ -564,9 +591,53 @@ class ImuSensorManager(private val context: Context) {
     /** Sets [algorithm], then reads register 0x24 back into [linkStats]. */
     fun configureAlgorithm() = sendCommands(algorithm.command, READ_ALGORITHM)
 
-    /** On connect: [outputRate], [installation] and [algorithm] under one unlock, all read back. */
+    /**
+     * Cut-off of the sensor's accelerometer and gyroscope filter, written on every connect and
+     * at once when changed while connected. Not saved to the sensor's flash. The sensor's own
+     * default is 20 Hz, which delays and smooths a 20 ms event: see [Bandwidth.suggestedFor].
+     */
+    @Volatile
+    var bandwidth: Bandwidth = Bandwidth.HZ_20
+        set(value) {
+            field = value
+            if (isConnected()) configureBandwidth()
+        }
+
+    /** Sets [bandwidth], then reads register 0x1F back into [linkStats]. */
+    fun configureBandwidth() = sendCommands(bandwidth.command, READ_BANDWIDTH)
+
+    /**
+     * On connect: [outputRate], [installation], [algorithm] and [bandwidth] under one unlock, all
+     * read back, the output content first: a clock check cut short (app killed, link lost) leaves
+     * the sensor on timestamps, which would otherwise outlive the app.
+     */
     private fun applySettings() =
-        sendCommands(outputRate.command, installation.command, algorithm.command, READ_RATE, READ_INSTALLATION, READ_ALGORITHM)
+        sendCommands(*settingsCommands(outputRate, installation, algorithm, bandwidth).toTypedArray())
+
+    internal val clockChecks = ClockCheckSlot()
+    @Volatile private var timestampSizeLogged = false
+
+    /**
+     * Measures the sensor's clock for [durationMs]: the 0x61 frames carry the sensor's
+     * millisecond counter instead of the angles (register 0x96 = 2), then the angles are
+     * restored, also on failure or cancellation, and on every connect.
+     *
+     * While it runs, samples carry [ImuSample.sensorTimeMs] and no Euler angles, and for about
+     * half a second after the end the angles are still absent. The manager cannot tell which
+     * sample listener records, so the caller must not record during a check. Needs a connected
+     * sensor, and one check at a time. A disconnect or a new connect ends the check at once with
+     * [ClockCheckResult.aborted] set; the sensor gets the angles back on the next connect.
+     */
+    suspend fun runClockCheck(durationMs: Long = 30_000): ClockCheckResult {
+        check(isConnected()) { "Not connected" }
+        val collector = clockChecks.begin()
+        timestampSizeLogged = false
+        try {
+            return ClockCheck.run(durationMs, collector, { sendCommands(it.command) })
+        } finally {
+            clockChecks.end(collector)
+        }
+    }
 
     /**
      * Makes [ImuSample.timestamp] relative to now; until called, timestamps are
