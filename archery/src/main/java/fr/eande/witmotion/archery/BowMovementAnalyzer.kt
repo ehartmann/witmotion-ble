@@ -207,6 +207,10 @@ class BowMovementAnalyzer(
     private fun spikeWithin(samples: List<ImuSample>, from: Int, windowMs: Long): Boolean =
         maxJumpWithin(samples, from, windowMs) > releaseAccelThreshold
 
+    /** Largest 20 ms acceleration jump, in g, from [releaseIndex] over [releaseWindowMs]: the release shock of a shot. */
+    fun releaseJumpG(samples: List<ImuSample>, releaseIndex: Int): Float =
+        maxJumpWithin(samples, releaseIndex, releaseWindowMs)
+
     /** Largest [accelJump] of the samples from [from] to [windowMs] after it. */
     internal fun maxJumpWithin(samples: List<ImuSample>, from: Int, windowMs: Long): Float {
         val start = samples[from].timestamp

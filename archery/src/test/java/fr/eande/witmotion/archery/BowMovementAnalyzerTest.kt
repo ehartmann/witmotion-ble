@@ -250,4 +250,19 @@ class BowMovementAnalyzerTest {
         assertThat(noisyAnalysis.metrics).isNotNull()
         assertThat(stableAnalysis.metrics!!.holdScore).isGreaterThan(noisyAnalysis.metrics!!.holdScore)
     }
+
+    @Test
+    fun `release jump at the release start exceeds the release threshold at 50, 100 and 200 Hz`() {
+        for (period in listOf(20L, 10L, 5L)) {
+            val samples = shotWithRampedRelease(period)
+            val release = analyzer.detectPhases(samples).first { it.phase == ShotPhase.RELEASE }.startIndex
+            assertThat(analyzer.releaseJumpG(samples, release)).isGreaterThan(2f)
+        }
+    }
+
+    @Test
+    fun `release jump during a calm hold stays small`() {
+        val samples = (0..100).map { sample(time = it * 10L) }
+        assertThat(analyzer.releaseJumpG(samples, 50)).isLessThan(0.1f)
+    }
 }
