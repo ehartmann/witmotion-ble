@@ -88,6 +88,35 @@ scans are filtered on the registered sensors, so they keep running with the scre
 The app requests the runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
 API 31+, `ACCESS_FINE_LOCATION` below); the library manifest declares them.
 
+### Why a shot was not detected
+
+`DetectionDiagnostics.explain(samples)` runs the shot detector over a recording (any `Sequence<ImuSample>`,
+streamed) and returns a `DetectionReport`: the `shots` the detector emits (the same ones as
+`ShotCycleDetector.detectAll`, as `drawStartMs` / `releaseMs` / `endMs`), the `nearMisses` (draws that did
+not become a shot, with a `Reason` and the figures behind it) and the `weakSpikes` (acceleration jumps
+from `weakSpikeG`, 1 g by default, up to the release threshold, outside the release of a detected shot).
+It uses the analyzer's own thresholds and math, so a tuned `BowMovementAnalyzer` is explained as it detects.
+
+| Reason | Meaning (default thresholds) |
+|---|---|
+| `DRAW_TOO_LONG` | The detector gave up on the window (30 s from its first draw, so the attempt can be shorter) and the attempt never held for 500 ms |
+| `HOLD_TOO_SHORT` | A jump over 2 g (or movement over 20 deg/s with such a jump just ahead) came before a hold reached 500 ms |
+| `SPIKE_TOO_WEAK` | A hold reached 500 ms, the largest jump stayed under 2 g but reached `weakSpikeG` |
+| `NO_SPIKE` | A hold reached 500 ms and no jump reached `weakSpikeG` |
+| `MOVED_DURING_HOLD` | No hold ever reached 500 ms and no jump over 2 g came, after holds (gyro under 5 deg/s) broken by movement over 20 deg/s |
+
+An attempt starts at a draw and runs through the holds shorter than 500 ms, until a hold of 500 ms or more
+ends by movement, or the detector gives up on the window, or the recording ends. When several reasons fit,
+the first of the table wins. `HOLD_TOO_SHORT` ends the attempt where it happens, even when a shot follows:
+a premature release is always reported. `MOVED_DURING_HOLD` is reported only when the attempt ends without a
+confirmed hold, a let-down or the end of the recording; the short broken holds before a real shot are normal
+aiming and are not listed. With a confirmed hold the reason is `SPIKE_TOO_WEAK` or `NO_SPIKE`.
+
+A `NearMiss` also carries `maxDrawGyroDps`, `holdMs`, `holdMeanGyroDps` and `maxAccelJumpG`: the largest jump
+from the sample after the longest hold's start to the hold's exit plus 200 ms (the analyzer's look-ahead for a
+release whose gyro crosses first) when movement ended it, or to the cut of the window or recording otherwise.
+`afterReleaseMs` must equal the value given to `ShotCycleDetector.detectAll` for `shots` to agree.
+
 ## Sensor protocol
 
 | Frame | Layout |
