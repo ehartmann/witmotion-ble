@@ -88,6 +88,27 @@ scans are filtered on the registered sensors, so they keep running with the scre
 The app requests the runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
 API 31+, `ACCESS_FINE_LOCATION` below); the library manifest declares them.
 
+### Why a shot was not detected
+
+`DetectionDiagnostics.explain(samples)` runs the shot detector over a recording (any `Sequence<ImuSample>`,
+streamed) and returns a `DetectionReport`: the `shots` the detector emits (the same ones as
+`ShotCycleDetector.detectAll`, as `drawStartMs` / `releaseMs` / `endMs`), the `nearMisses` (draws that did
+not become a shot, with a `Reason` and the figures behind it) and the `weakSpikes` (acceleration jumps
+from `weakSpikeG`, 1 g by default, up to the release threshold, outside the release of a detected shot).
+It uses the analyzer's own thresholds and math, so a tuned `BowMovementAnalyzer` is explained as it detects.
+
+| Reason | Meaning (default thresholds) |
+|---|---|
+| `DRAW_TOO_LONG` | The draw never held for 500 ms and the detector gave up after 30 s |
+| `MOVED_DURING_HOLD` | A hold (gyro under 5 deg/s) was broken by movement over 20 deg/s before 500 ms |
+| `HOLD_TOO_SHORT` | A jump over 2 g came before the hold reached 500 ms |
+| `SPIKE_TOO_WEAK` | The hold reached 500 ms, the largest jump stayed under 2 g but reached `weakSpikeG` |
+| `NO_SPIKE` | The hold reached 500 ms and no jump reached `weakSpikeG` |
+
+When several fit, the first of the table wins, except that a jump over 2 g coinciding with the movement
+that ends a short hold gives `HOLD_TOO_SHORT`. A `NearMiss` also carries `maxDrawGyroDps`, `holdMs`,
+`holdMeanGyroDps` and `maxAccelJumpG` (the largest jump from the hold's start to the end of the attempt).
+
 ## Sensor protocol
 
 | Frame | Layout |
