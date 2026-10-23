@@ -99,15 +99,23 @@ It uses the analyzer's own thresholds and math, so a tuned `BowMovementAnalyzer`
 
 | Reason | Meaning (default thresholds) |
 |---|---|
-| `DRAW_TOO_LONG` | The draw never held for 500 ms and the detector gave up after 30 s |
-| `MOVED_DURING_HOLD` | A hold (gyro under 5 deg/s) was broken by movement over 20 deg/s before 500 ms |
-| `HOLD_TOO_SHORT` | A jump over 2 g came before the hold reached 500 ms |
-| `SPIKE_TOO_WEAK` | The hold reached 500 ms, the largest jump stayed under 2 g but reached `weakSpikeG` |
-| `NO_SPIKE` | The hold reached 500 ms and no jump reached `weakSpikeG` |
+| `DRAW_TOO_LONG` | The detector gave up on the window (30 s from its first draw, so the attempt can be shorter) and the attempt never held for 500 ms |
+| `HOLD_TOO_SHORT` | A jump over 2 g (or movement over 20 deg/s with such a jump just ahead) came before a hold reached 500 ms |
+| `SPIKE_TOO_WEAK` | A hold reached 500 ms, the largest jump stayed under 2 g but reached `weakSpikeG` |
+| `NO_SPIKE` | A hold reached 500 ms and no jump reached `weakSpikeG` |
+| `MOVED_DURING_HOLD` | No hold ever reached 500 ms and no jump over 2 g came, after holds (gyro under 5 deg/s) broken by movement over 20 deg/s |
 
-When several fit, the first of the table wins, except that a jump over 2 g coinciding with the movement
-that ends a short hold gives `HOLD_TOO_SHORT`. A `NearMiss` also carries `maxDrawGyroDps`, `holdMs`,
-`holdMeanGyroDps` and `maxAccelJumpG` (the largest jump from the hold's start to the end of the attempt).
+An attempt starts at a draw and runs through the holds shorter than 500 ms, until a hold of 500 ms or more
+ends by movement, or the detector gives up on the window, or the recording ends. When several reasons fit,
+the first of the table wins. `HOLD_TOO_SHORT` ends the attempt where it happens, even when a shot follows:
+a premature release is always reported. `MOVED_DURING_HOLD` is reported only when the attempt ends without a
+confirmed hold, a let-down or the end of the recording; the short broken holds before a real shot are normal
+aiming and are not listed. With a confirmed hold the reason is `SPIKE_TOO_WEAK` or `NO_SPIKE`.
+
+A `NearMiss` also carries `maxDrawGyroDps`, `holdMs`, `holdMeanGyroDps` and `maxAccelJumpG`: the largest jump
+from the sample after the longest hold's start to the hold's exit plus 200 ms (the analyzer's look-ahead for a
+release whose gyro crosses first) when movement ended it, or to the cut of the window or recording otherwise.
+`afterReleaseMs` must equal the value given to `ShotCycleDetector.detectAll` for `shots` to agree.
 
 ## Sensor protocol
 
