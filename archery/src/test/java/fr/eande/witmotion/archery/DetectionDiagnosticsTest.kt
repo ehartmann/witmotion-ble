@@ -230,4 +230,98 @@ class DetectionDiagnosticsTest {
         assertThat(run.peakBufferedSamples).isGreaterThan(0)
         assertThat(run.peakBufferedSamples).isAtMost(1_000)
     }
+
+    private fun Stream.prematureRelease() {
+        idle(); draw(); hold(300); at(40f, JOLT)
+    }
+
+    @Test
+    fun `a premature release followed by a shot is still a HOLD_TOO_SHORT near miss`() {
+        val s = Stream().apply { prematureRelease(); draw(1_000); shot() }
+
+        val report = s.explain()
+
+        assertThat(report.shots).hasSize(1)
+        assertThat(report.nearMisses.map { it.reason }).containsExactly(Reason.HOLD_TOO_SHORT)
+        assertThat(report.nearMisses.single().drawStartMs).isEqualTo(200L)
+    }
+
+    @Test
+    fun `a premature release, 25 s of movement, then a shot (window restart) is still reported`() {
+        val s = Stream().apply {
+            prematureRelease(); draw(25_000); hold(200); draw(2_000); hold(1_000); release(); followThrough()
+        }
+
+        val report = s.explain()
+
+        assertThat(report.shots).hasSize(1)
+        assertThat(report.nearMisses.map { it.reason }).containsExactly(Reason.HOLD_TOO_SHORT)
+    }
+
+    @Test
+    fun `a premature release then a let-down hold gives HOLD_TOO_SHORT then NO_SPIKE`() {
+        val s = Stream().apply { prematureRelease(); draw(1_000); hold(1_000); draw(300) }
+
+        val report = s.explain()
+
+        assertThat(report.shots).isEmpty()
+        assertThat(report.nearMisses.map { it.reason }).containsExactly(Reason.HOLD_TOO_SHORT, Reason.NO_SPIKE).inOrder()
+    }
+
+    @Test
+    fun `short broken holds followed by a clean shot are normal aiming, not near misses`() {
+        val s = Stream().apply { idle(); draw(); hold(300); draw(1_000); hold(200); draw(500); shot() }
+
+        val report = s.explain()
+
+        assertThat(report.shots).hasSize(1)
+        assertThat(report.nearMisses).isEmpty()
+    }
+
+    @Test
+    fun `short broken holds then a let-down and a held attempt are one attempt, NO_SPIKE`() {
+        val s = Stream().apply { idle(); draw(); hold(300); draw(1_000); idle(); draw(); hold(1_000); draw(300) }
+
+        assertThat(s.explain().nearMisses.map { it.reason }).containsExactly(Reason.NO_SPIKE)
+    }
+
+    @Test
+    fun `a weak release where the gyro crosses first reads SPIKE_TOO_WEAK`() {
+        val s = Stream().apply { idle(); draw(); hold(1_000); at(40f); at(40f, WEAK_JOLT); draw(1_000) }
+
+        val miss = s.onlyNearMiss()
+
+        assertThat(miss.reason).isEqualTo(Reason.SPIKE_TOO_WEAK)
+        assertThat(miss.maxAccelJumpG).isWithin(0.01f).of(1.5f)
+    }
+
+    @Test
+    fun `many weak spikes over a long stream keep the pending spikes bounded`() {
+        val run = DiagnosticsRun(BowMovementAnalyzer(), weakSpikeG = 1f, afterReleaseMs = 3_000)
+        var peakPending = 0
+        val cycleMs = 20_000L
+        var t = 0L
+        while (t < 30 * 60_000L) {
+            val local = t % cycleMs
+            val gyro = when {
+                local < 1_000 -> 0f
+                local < 2_000 -> 30f
+                local < 5_000 -> 1f
+                else -> 2f
+            }
+            val accel = when {
+                local == 5_000L -> JOLT
+                local >= 10_000 && local % 1_000 == 0L -> WEAK_JOLT
+                else -> REST
+            }
+            run.onSample(ImuSample(timestamp = t, gyroscope = floatArrayOf(gyro, 0f, 0f), acceleration = accel))
+            peakPending = maxOf(peakPending, run.pendingSpikes)
+            t += 10
+        }
+        val report = run.finish()
+
+        assertThat(report.shots).hasSize(90)
+        assertThat(report.weakSpikes).hasSize(900)
+        assertThat(peakPending).isAtMost(12)
+    }
 }

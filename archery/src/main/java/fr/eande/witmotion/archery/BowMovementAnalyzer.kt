@@ -27,7 +27,7 @@ class BowMovementAnalyzer(
     private val followThroughMs: Long = 500,       // ms after release
     // At release the gyro often crosses drawThreshold one or two samples before the accel spike
     // (seen on the WT9011DCL at ~25 Hz): look this far ahead for the spike before calling it a draw
-    private val releaseWindowMs: Long = 200,
+    internal val releaseWindowMs: Long = 200,
     /** The acceleration jump of a release is measured over this window, whatever the rate (see [accelJump]). */
     internal val jumpWindowMs: Long = 20
 ) {
@@ -204,14 +204,19 @@ class BowMovementAnalyzer(
             (gyroMagnitude(samples[i]) > drawThreshold && spikeWithin(samples, i, releaseWindowMs))
 
     /** Whether an acceleration spike happens from sample [from] to [windowMs] after it. */
-    private fun spikeWithin(samples: List<ImuSample>, from: Int, windowMs: Long): Boolean {
+    private fun spikeWithin(samples: List<ImuSample>, from: Int, windowMs: Long): Boolean =
+        maxJumpWithin(samples, from, windowMs) > releaseAccelThreshold
+
+    /** Largest [accelJump] of the samples from [from] to [windowMs] after it. */
+    internal fun maxJumpWithin(samples: List<ImuSample>, from: Int, windowMs: Long): Float {
         val start = samples[from].timestamp
+        var largest = 0f
         var j = from
         while (j < samples.size && samples[j].timestamp - start <= windowMs) {
-            if (accelJump(samples, j) > releaseAccelThreshold) return true
+            largest = maxOf(largest, accelJump(samples, j))
             j++
         }
-        return false
+        return largest
     }
 
     /**
