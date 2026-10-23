@@ -117,6 +117,8 @@ from the sample after the longest hold's start to the hold's exit plus 200 ms (t
 release whose gyro crosses first) when movement ended it, or to the cut of the window or recording otherwise.
 `afterReleaseMs` must equal the value given to `ShotCycleDetector.detectAll` for `shots` to agree.
 
+`BowMovementAnalyzer.releaseJumpG(samples, releaseIndex)` returns the largest 20 ms acceleration jump, in g, from a release start over `releaseWindowMs` (200 ms by default): the per-shot release shock.
+
 ## Sensor protocol
 
 | Frame | Layout |
