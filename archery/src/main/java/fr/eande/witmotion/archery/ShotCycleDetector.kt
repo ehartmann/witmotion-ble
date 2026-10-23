@@ -49,6 +49,17 @@ class ShotCycleDetector(
         }
     }
 
+    /** Sees the buffer when a draw window closes, so [DetectionDiagnostics] can explain it; never changes the detection. */
+    internal interface Observer {
+        /** A shot is emitted from buffer index [from]. */
+        fun shot(buffer: List<ImuSample>, from: Int)
+
+        /** The window is dropped up to buffer index [upTo] (exclusive); [stuck] when it gave up for [maxDrawMs]. */
+        fun dropped(buffer: List<ImuSample>, upTo: Int, stuck: Boolean)
+    }
+
+    internal var observer: Observer? = null
+
     private val lock = Any()
     private val buffer = ArrayList<ImuSample>()
     private var shotStartIndex: Int? = null
@@ -86,7 +97,10 @@ class ShotCycleDetector(
      */
     fun flush() = synchronized(lock) {
         val start = shotStartIndex
-        if (start == null || !releaseSeen) return@synchronized reset()
+        if (start == null || !releaseSeen) {
+            if (start != null) observer?.dropped(buffer, buffer.size, stuck = false)
+            return@synchronized reset()
+        }
         val phases = analyzer.detectPhases(buffer)
         val release = phases.firstOrNull { it.phase == ShotPhase.RELEASE && it.startIndex >= start }
         emitShot(release?.let { lastDrawStart(phases, it) } ?: start)
@@ -100,10 +114,12 @@ class ShotCycleDetector(
     private fun restartAtLatestDraw(phases: List<BowMovementAnalyzer.PhaseSegment>, start: Int) {
         val latest = phases.lastOrNull { it.phase == ShotPhase.DRAW }?.startIndex
         if (latest != null && latest > start && buffer.last().timestamp - buffer[latest].timestamp <= maxDrawMs) {
+            observer?.dropped(buffer, latest, stuck = true)
             buffer.subList(0, latest).clear()
             shotStartIndex = 0
             releaseSeen = false
         } else {
+            observer?.dropped(buffer, buffer.size, stuck = true)
             reset()
         }
     }
@@ -116,6 +132,7 @@ class ShotCycleDetector(
     }
 
     private fun emitShot(start: Int) {
+        observer?.shot(buffer, start)
         val shotSamples = buffer.subList(start, buffer.size).toList()
         reset()
         onShotDetected(DetectedShot(shotSamples, analyzer.analyze(shotSamples).metrics))

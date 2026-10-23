@@ -20,16 +20,16 @@ import kotlin.math.sqrt
  * - Follow-through score: based on return to hold position
  */
 class BowMovementAnalyzer(
-    private val holdThreshold: Float = 5f,        // °/s — below this = hold
-    private val drawThreshold: Float = 20f,        // °/s — above this = drawing
-    private val releaseAccelThreshold: Float = 2f, // g — spike above this = release
-    private val minHoldMs: Long = 500,             // minimum hold time to confirm
+    internal val holdThreshold: Float = 5f,        // °/s — below this = hold
+    internal val drawThreshold: Float = 20f,        // °/s — above this = drawing
+    internal val releaseAccelThreshold: Float = 2f, // g — spike above this = release
+    internal val minHoldMs: Long = 500,             // minimum hold time to confirm
     private val followThroughMs: Long = 500,       // ms after release
     // At release the gyro often crosses drawThreshold one or two samples before the accel spike
     // (seen on the WT9011DCL at ~25 Hz): look this far ahead for the spike before calling it a draw
     private val releaseWindowMs: Long = 200,
     /** The acceleration jump of a release is measured over this window, whatever the rate (see [accelJump]). */
-    private val jumpWindowMs: Long = 20
+    internal val jumpWindowMs: Long = 20
 ) {
 
     data class ShotAnalysis(
@@ -69,7 +69,6 @@ class BowMovementAnalyzer(
         for (i in samples.indices) {
             val s = samples[i]
             val gyroMag = gyroMagnitude(s)
-            val accelSpike = accelJump(samples, i)
             val newPhase: ShotPhase
 
             when (currentPhase) {
@@ -93,9 +92,7 @@ class BowMovementAnalyzer(
                     // straight to RELEASE, emitting a bogus shot cycle.
                     val holdConfirmed = holdStartTime != null &&
                         s.timestamp - holdStartTime >= minHoldMs
-                    val releaseStarting = accelSpike > releaseAccelThreshold ||
-                        (gyroMag > drawThreshold && spikeWithin(samples, i, releaseWindowMs))
-                    if (holdConfirmed && releaseStarting) {
+                    if (holdConfirmed && isReleaseStart(samples, i)) {
                         releaseTime = s.timestamp
                         newPhase = ShotPhase.RELEASE
                     } else if (gyroMag > drawThreshold) {
@@ -201,6 +198,11 @@ class BowMovementAnalyzer(
 
     // --- Utilities ---
 
+    /** Whether sample [i] starts a release: a spike now, or movement with a spike just ahead. */
+    internal fun isReleaseStart(samples: List<ImuSample>, i: Int): Boolean =
+        accelJump(samples, i) > releaseAccelThreshold ||
+            (gyroMagnitude(samples[i]) > drawThreshold && spikeWithin(samples, i, releaseWindowMs))
+
     /** Whether an acceleration spike happens from sample [from] to [windowMs] after it. */
     private fun spikeWithin(samples: List<ImuSample>, from: Int, windowMs: Long): Boolean {
         val start = samples[from].timestamp
@@ -218,7 +220,7 @@ class BowMovementAnalyzer(
      * 200 Hz a release that ramps over 10 ms never jumps 2 g in 5 ms); over a fixed window it
      * does not.
      */
-    private fun accelJump(samples: List<ImuSample>, i: Int): Float {
+    internal fun accelJump(samples: List<ImuSample>, i: Int): Float {
         val current = samples[i]
         var largest = 0f
         var j = i - 1
@@ -231,7 +233,7 @@ class BowMovementAnalyzer(
         return largest
     }
 
-    private fun gyroMagnitude(sample: ImuSample): Float {
+    internal fun gyroMagnitude(sample: ImuSample): Float {
         val g = sample.gyroscope ?: return 0f
         return sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
     }
