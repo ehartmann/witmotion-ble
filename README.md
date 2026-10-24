@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("fr.eande.witmotion:archery:0.1.0") // pulls :ble; or fr.eande.witmotion:ble alone
+implementation("fr.eande.witmotion:archery:0.6.0") // pulls :ble; or fr.eande.witmotion:ble alone
 ```
 
 To develop an app against a local checkout instead, add to its `settings.gradle.kts`
@@ -44,12 +44,12 @@ and build with `-Pwitmotion.local`; the included build then needs the same AGP v
 ### Releasing
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.6.0 && git push origin v0.6.0
 ```
 
 The Release workflow runs the unit tests, builds the AARs with that version and creates
 the release, its notes listing the commits since the previous tag. Locally:
-`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.2.0` writes the same
+`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.6.0` writes the same
 files to `build/release-repo/`.
 
 ### API
@@ -175,6 +175,23 @@ peripheral latency of 10, overriding `CONNECTION_PRIORITY_HIGH`; with packing, t
 is enough (RGu0/WT901 measured 198 Hz at 200 Hz). `linkStats` exposes the interval and
 latency the stack reports through the hidden `BluetoothGattCallback.onConnectionUpdated`
 (as Nordic's Android-BLE-Library does) and the rate register read back.
+
+## Changelog
+
+### 0.6.0
+
+Scores change with L5, the API changes with L6 and L9; the rest are fixes.
+
+- L1: the sample clock no longer runs ahead of real time when the sensor is faster than `outputRate`. The manager compares the rate register read back with `outputRate`, writes the rate again once per connect on a mismatch, and `LinkStats.rateMismatch` (new) tells an app to flag the session.
+- L2: a scan no longer overwrites the state of a live link (`connectionState`, `isConnected()`, `runClockCheck`, auto-reconnect).
+- L3: `CONNECTED` is reported only once the notification enable succeeded; a failed enable, a lost GATT callback (2 s per queued operation) or a connect that never finds its services (20 s) ends in a disconnect and the usual reconnect instead of a frozen link.
+- L4: one failing sample listener no longer starves the others or `lastSample`.
+- L5: **behaviour change.** `BowMovementMetrics.releaseScore` counts the milliseconds above the release threshold with the rate-independent `accelJump` (10 points per 20 ms, as before at 50 Hz) and `ShotErrorClassifier` takes its flinch spike from `accelJump`: the same release now scores within about 15 points at 50, 100 and 200 Hz, where it varied by 60 points. Scores and flinch detection change for recordings not sampled at 50 Hz.
+- L6: **API change.** `ShotErrorClassifier` returns `CLEAN` with confidence 0.3 and details `No release`, `No follow-through` or `No euler angles` when no error is found and an input is missing, instead of `CLEAN` at 0.9. `ShotError.PUSHING` and `ShotError.HEELING`, never returned, are removed.
+- L7: `ImuAutoConnector` reports success as soon as the link is up (waits for `CONNECTED` or `DISCONNECTED`, 15 s) instead of a fixed 5 s, and always stops its scan.
+- L8: tests cover the notification and connect pipeline.
+- L9: **API change.** Both modules build with `explicitApi()`. `ImuDataParser`, `GattOpQueue` and `ImuSensorManager.onDeviceDiscovered` are internal. The command byte arrays (`UNLOCK`, `SAVE_CONFIG`, `READ_*`, `ImuCalibrationHelper.*`) are getters returning a fresh array, source-compatible. `ImuSample.equals` compares every field instead of the timestamp only.
+- L10: `cantAngle` and the breaking-wrist check average the roll across the +/-180 wrap (`circularMean`).
 
 ## Build & test
 
