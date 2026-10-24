@@ -30,7 +30,7 @@ public class ImuAutoConnector(
     public companion object {
         private const val TAG = "ImuAutoConnector"
         private const val SCAN_DURATION_MS = 5000L
-        private const val CONNECT_TIMEOUT_MS = 15_000L
+        private const val CONNECT_TIMEOUT_MS = 25_000L
         private const val MAX_RECONNECT_ATTEMPTS = 3
         private const val RECONNECT_BACKOFF_MS = 3000L
     }
@@ -43,6 +43,10 @@ public class ImuAutoConnector(
     }
 
     private var autoConnectJob: Job? = null
+    private var retryJob: Job? = null
+
+    /** Set when a retry gave up: the drop of its own last connect must not start another one. */
+    @Volatile private var retryExhausted = false
 
     private val _reconnectEvents = MutableSharedFlow<ReconnectEvent>(extraBufferCapacity = 1)
     public val reconnectEvents: SharedFlow<ReconnectEvent> = _reconnectEvents.asSharedFlow()
@@ -52,6 +56,9 @@ public class ImuAutoConnector(
         // once — revisit only if ImuAutoConnector ever stops being a singleton.
         scope.launch {
             sensorManager.unexpectedDisconnects.collect { retryAfterUnexpectedDisconnect() }
+        }
+        scope.launch {
+            sensorManager.connectionState.collect { if (it == ConnectionState.CONNECTED) retryExhausted = false }
         }
     }
 
@@ -112,6 +119,7 @@ public class ImuAutoConnector(
         if (store.getAll().isEmpty()) return null
         autoConnectJob?.takeIf { it.isActive }?.let { return it }
 
+        retryExhausted = false
         return scope.launch {
             Log.d(TAG, "Starting auto-connect scan...")
             if (!attemptConnect(onlyIfSingle)) {
@@ -128,9 +136,11 @@ public class ImuAutoConnector(
     public fun retryAfterUnexpectedDisconnect() {
         if (sensorManager.isConnected()) return
         if (store.getAll().isEmpty()) return
+        // a drop during a retry is handled by the attempt running: restarting would reset the budget
+        if (retryJob?.isActive == true || retryExhausted) return
 
         val previous = autoConnectJob?.also { it.cancel() }
-        autoConnectJob = scope.launch {
+        val job = scope.launch {
             previous?.join() // its cleanup must not stop this attempt's scan or clear its callback
             _reconnectEvents.emit(ReconnectEvent.Started)
             repeat(MAX_RECONNECT_ATTEMPTS) { attempt ->
@@ -143,8 +153,11 @@ public class ImuAutoConnector(
                 }
             }
             Log.d(TAG, "Reconnect exhausted after $MAX_RECONNECT_ATTEMPTS attempts")
+            retryExhausted = true
             _reconnectEvents.emit(ReconnectEvent.Exhausted)
         }
+        autoConnectJob = job
+        retryJob = job
     }
 
     public fun cancel() {

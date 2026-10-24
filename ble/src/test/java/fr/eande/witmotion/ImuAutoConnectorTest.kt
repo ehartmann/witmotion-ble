@@ -287,13 +287,13 @@ class ImuAutoConnectorTest {
     }
 
     @Test
-    fun `a connect that never completes is given up after 15 s`() = runTest {
+    fun `a connect that never completes is given up after 25 s`() = runTest {
         val events = reconnectWithDiscovery()
 
-        advanceTimeBy(14_000)
+        advanceTimeBy(24_000)
         runCurrent()
         verify(exactly = 1) { sensorManager.startScan(any()) }
-        advanceTimeBy(2_000) // 15 s timeout, then 3 s backoff before the next scan
+        advanceTimeBy(2_000) // 25 s timeout, then 3 s backoff before the next scan
         advanceTimeBy(3_000)
         runCurrent()
 
@@ -314,5 +314,33 @@ class ImuAutoConnectorTest {
         runCurrent()
 
         verify(exactly = 1) { sensorManager.stopScan() }
+    }
+
+    @Test
+    fun `repeated drops during a retry end in Exhausted after 3 attempts, the budget is not reset`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+        val events = mutableListOf<ImuAutoConnector.ReconnectEvent>()
+        backgroundScope.launch { connector.reconnectEvents.collect { events.add(it) } }
+        runCurrent()
+
+        connector.retryAfterUnexpectedDisconnect()
+        for (backoff in listOf(3_000L, 6_000L, 0L)) {
+            runCurrent()
+            onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+            advanceTimeBy(500)
+            connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
+            unexpectedDisconnects.tryEmit(Unit)
+            runCurrent()
+            advanceTimeBy(backoff)
+        }
+        runCurrent()
+
+        verify(exactly = 3) { sensorManager.startScan(any()) }
+        assertThat(events).containsExactly(
+            ImuAutoConnector.ReconnectEvent.Started,
+            ImuAutoConnector.ReconnectEvent.Exhausted
+        ).inOrder()
     }
 }
