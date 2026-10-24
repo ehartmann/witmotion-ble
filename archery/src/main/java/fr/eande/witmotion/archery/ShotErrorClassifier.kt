@@ -20,8 +20,6 @@ object ShotErrorClassifier {
         FLINCH("Flinch", "Sudden jerky movement at release — common in beginners"),
         BREAKING_WRIST("Breaking wrist", "Wrist rotation during or after release — grip too tight"),
         DROPPING_ARM("Dropping arm", "Bow arm drops immediately after release — no follow-through"),
-        PUSHING("Pushing", "Forward push at release — trying to 'help' the arrow"),
-        HEELING("Heeling", "Consistent low impacts — bow arm pushing forward and down"),
         CREEPING("Creeping", "Slow forward draw hand movement during hold — losing draw length"),
         CLEAN("Clean shot", "Good execution with minimal parasitic movement")
     }
@@ -75,7 +73,15 @@ object ShotErrorClassifier {
         val creeping = checkCreeping(holdSamples)
         if (creeping > 0.5f) errors.add(ShotError.CREEPING to creeping)
 
-        // No errors → clean shot
+        // No error found: a clean verdict needs every input the checks read
+        val missing = listOfNotNull(
+            "No release".takeIf { releaseSegment == null },
+            "No follow-through".takeIf { ftSegment == null },
+            "No euler angles".takeIf { samples.none { it.euler != null } }
+        )
+        if (errors.isEmpty() && missing.isNotEmpty()) {
+            return ClassificationResult(ShotError.CLEAN, 0.3f, details = missing.joinToString())
+        }
         if (errors.isEmpty()) {
             return ClassificationResult(ShotError.CLEAN, 0.9f, details = "Good shot execution")
         }

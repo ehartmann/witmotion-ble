@@ -120,4 +120,60 @@ class ShotErrorClassifierTest {
             assertThat(result.primaryError).isEqualTo(ShotErrorClassifier.ShotError.FLINCH)
         }
     }
+
+    private fun shot(followThroughSamples: Int, withEuler: Boolean = true): Pair<List<ImuSample>, List<BowMovementAnalyzer.PhaseSegment>> {
+        val euler = if (withEuler) floatArrayOf(2f, 10f, 0f) else null
+        val samples = mutableListOf<ImuSample>()
+        var t = 0L
+        repeat(10) { samples.add(sample(t, gyro = floatArrayOf(25f, 0f, 0f)).copy(euler = euler)); t += 20 }
+        repeat(30) { samples.add(sample(t, gyro = floatArrayOf(0.5f, 0f, 0f)).copy(euler = euler)); t += 20 }
+        samples.add(sample(t, accel = floatArrayOf(3f, 0f, 1f)).copy(euler = euler)); t += 20
+        repeat(followThroughSamples) { samples.add(sample(t, gyro = floatArrayOf(1f, 0f, 0f)).copy(euler = euler)); t += 20 }
+        return samples to BowMovementAnalyzer().detectPhases(samples)
+    }
+
+    @Test
+    fun `a shot with its follow-through and angles is clean with high confidence`() {
+        val (samples, phases) = shot(followThroughSamples = 40)
+
+        val result = ShotErrorClassifier.classify(samples, phases)
+
+        assertThat(result.primaryError).isEqualTo(ShotErrorClassifier.ShotError.CLEAN)
+        assertThat(result.confidence).isEqualTo(0.9f)
+    }
+
+    @Test
+    fun `no follow-through segment gives low confidence instead of a clean shot`() {
+        val (samples, phases) = shot(followThroughSamples = 5)
+
+        val result = ShotErrorClassifier.classify(samples, phases)
+
+        assertThat(result.confidence).isEqualTo(0.3f)
+        assertThat(result.details).isEqualTo("No follow-through")
+    }
+
+    @Test
+    fun `no release segment gives low confidence instead of a clean shot`() {
+        val (samples, phases) = shot(followThroughSamples = 40)
+
+        val result = ShotErrorClassifier.classify(samples, phases.filter { it.phase != ShotPhase.RELEASE && it.phase != ShotPhase.FOLLOW_THROUGH })
+
+        assertThat(result.confidence).isEqualTo(0.3f)
+        assertThat(result.details).isEqualTo("No release, No follow-through")
+    }
+
+    @Test
+    fun `missing euler angles give low confidence instead of a clean shot`() {
+        val (samples, phases) = shot(followThroughSamples = 40, withEuler = false)
+
+        val result = ShotErrorClassifier.classify(samples, phases)
+
+        assertThat(result.confidence).isEqualTo(0.3f)
+        assertThat(result.details).isEqualTo("No euler angles")
+    }
+
+    @Test
+    fun `unused PUSHING and HEELING errors are gone`() {
+        assertThat(ShotErrorClassifier.ShotError.values().map { it.name }).containsNoneOf("PUSHING", "HEELING")
+    }
 }
