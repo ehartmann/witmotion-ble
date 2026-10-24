@@ -10,7 +10,9 @@ import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -43,6 +45,7 @@ class ImuAutoConnectorTest {
     private lateinit var store: RegisteredImuStore
     private lateinit var sensorManager: ImuSensorManager
     private lateinit var unexpectedDisconnects: MutableSharedFlow<Unit>
+    private val connectionState = MutableStateFlow(ImuSensorManager.ConnectionState.DISCONNECTED)
     private val onDeviceDiscoveredSlot = slot<(ImuSensorDevice) -> Unit>()
 
     // Covers every attempt's scan delay plus the backoff between them; see MAX_RECONNECT_ATTEMPTS
@@ -60,6 +63,8 @@ class ImuAutoConnectorTest {
         sensorManager = mockk(relaxed = true) {
             every { unexpectedDisconnects } returns this@ImuAutoConnectorTest.unexpectedDisconnects
             every { onDeviceDiscovered = capture(onDeviceDiscoveredSlot) } just Runs
+            every { connectionState } returns this@ImuAutoConnectorTest.connectionState
+            every { connect(any()) } answers { this@ImuAutoConnectorTest.connectionState.value = ImuSensorManager.ConnectionState.CONNECTING }
         }
     }
 
@@ -120,6 +125,8 @@ class ImuAutoConnectorTest {
         connector.retryAfterUnexpectedDisconnect()
         runCurrent() // let the first attempt run up to its scan delay, capturing onDeviceDiscovered
         onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        advanceTimeBy(300)
+        connectionState.value = ImuSensorManager.ConnectionState.CONNECTED
         advanceTimeBy(fullRetrySequenceMs)
         runCurrent()
 
@@ -237,5 +244,75 @@ class ImuAutoConnectorTest {
         runCurrent()
 
         verify(exactly = 0) { sensorManager.startScan(any()) }
+    }
+
+    private fun TestScope.reconnectWithDiscovery(): List<ImuAutoConnector.ReconnectEvent> {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+        val events = mutableListOf<ImuAutoConnector.ReconnectEvent>()
+        backgroundScope.launch { connector.reconnectEvents.collect { events.add(it) } }
+        connector.retryAfterUnexpectedDisconnect()
+        runCurrent()
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        return events
+    }
+
+    @Test
+    fun `a reconnect succeeds as soon as the link is up, not after the scan duration`() = runTest {
+        val events = reconnectWithDiscovery()
+
+        advanceTimeBy(300)
+        connectionState.value = ImuSensorManager.ConnectionState.CONNECTED
+        runCurrent()
+
+        assertThat(events).containsExactly(
+            ImuAutoConnector.ReconnectEvent.Started,
+            ImuAutoConnector.ReconnectEvent.Succeeded
+        ).inOrder()
+        verify { sensorManager.stopScan() }
+    }
+
+    @Test
+    fun `a connect that fails after connect() was called is not reported as a success`() = runTest {
+        val events = reconnectWithDiscovery()
+
+        advanceTimeBy(1_000)
+        connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        assertThat(events).containsExactly(ImuAutoConnector.ReconnectEvent.Started)
+        verify(exactly = 2) { sensorManager.startScan(any()) }
+    }
+
+    @Test
+    fun `a connect that never completes is given up after 15 s`() = runTest {
+        val events = reconnectWithDiscovery()
+
+        advanceTimeBy(14_000)
+        runCurrent()
+        verify(exactly = 1) { sensorManager.startScan(any()) }
+        advanceTimeBy(2_000) // 15 s timeout, then 3 s backoff before the next scan
+        advanceTimeBy(3_000)
+        runCurrent()
+
+        assertThat(events).containsExactly(ImuAutoConnector.ReconnectEvent.Started)
+        verify(exactly = 2) { sensorManager.startScan(any()) }
+    }
+
+    @Test
+    fun `cancelling an attempt stops its scan`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.tryAutoConnect()
+        runCurrent()
+        verify(exactly = 0) { sensorManager.stopScan() }
+        connector.cancel()
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.stopScan() }
     }
 }

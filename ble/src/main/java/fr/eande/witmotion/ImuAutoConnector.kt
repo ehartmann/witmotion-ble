@@ -1,13 +1,17 @@
 package fr.eande.witmotion
 
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import fr.eande.witmotion.ImuSensorManager.ConnectionState
 
 /**
  * Scans for registered IMU devices and auto-connects to the first one found (or, on request,
@@ -26,6 +30,7 @@ class ImuAutoConnector(
     companion object {
         private const val TAG = "ImuAutoConnector"
         private const val SCAN_DURATION_MS = 5000L
+        private const val CONNECT_TIMEOUT_MS = 15_000L
         private const val MAX_RECONNECT_ATTEMPTS = 3
         private const val RECONNECT_BACKOFF_MS = 3000L
     }
@@ -53,37 +58,48 @@ class ImuAutoConnector(
     /**
      * Single scan-and-connect attempt against registered devices: the first one found, or with
      * [onlyIfSingle] the only one that answered during the whole scan (none when several did).
+     * True once the link is up; false when nothing was found or the connect failed or took
+     * more than [CONNECT_TIMEOUT_MS].
      */
     private suspend fun attemptConnect(onlyIfSingle: Boolean = false): Boolean {
         if (sensorManager.isConnected()) return true
         if (store.getAll().isEmpty()) return false
 
-        var connected = false
+        var connecting = false
+        val chosen = CompletableDeferred<Unit>()
         val found = linkedMapOf<String, ImuSensorDevice>()
         sensorManager.onDeviceDiscovered = { device ->
-            if (!connected && store.isRegistered(device.address)) {
+            if (!connecting && store.isRegistered(device.address)) {
                 if (onlyIfSingle) {
                     found[device.address] = device
                 } else {
-                    connected = true
+                    connecting = true
                     Log.d(TAG, "Found registered device: ${device.name} (${device.address})")
                     sensorManager.connect(device)
+                    chosen.complete(Unit)
                 }
             }
         }
-        sensorManager.startScan(store.getAll().map { it.address })
-        delay(SCAN_DURATION_MS)
-        sensorManager.onDeviceDiscovered = null
-        if (onlyIfSingle) {
-            found.values.singleOrNull()?.let { device ->
-                connected = true
-                Log.d(TAG, "Only registered device found: ${device.name} (${device.address})")
-                sensorManager.stopScan()
-                sensorManager.connect(device)
-            } ?: Log.d(TAG, "${found.size} registered devices found: not choosing")
+        try {
+            sensorManager.startScan(store.getAll().map { it.address })
+            withTimeoutOrNull(SCAN_DURATION_MS) { chosen.await() }
+            sensorManager.onDeviceDiscovered = null
+            if (onlyIfSingle) {
+                found.values.singleOrNull()?.let { device ->
+                    connecting = true
+                    Log.d(TAG, "Only registered device found: ${device.name} (${device.address})")
+                    sensorManager.stopScan()
+                    sensorManager.connect(device)
+                } ?: Log.d(TAG, "${found.size} registered devices found: not choosing")
+            }
+            if (!connecting) return false
+            return withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                sensorManager.connectionState.first { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
+            } == ConnectionState.CONNECTED
+        } finally {
+            sensorManager.onDeviceDiscovered = null
+            sensorManager.stopScan()
         }
-        if (!connected) sensorManager.stopScan()
-        return connected
     }
 
     /**
@@ -113,8 +129,9 @@ class ImuAutoConnector(
         if (sensorManager.isConnected()) return
         if (store.getAll().isEmpty()) return
 
-        autoConnectJob?.cancel()
+        val previous = autoConnectJob?.also { it.cancel() }
         autoConnectJob = scope.launch {
+            previous?.join() // its cleanup must not stop this attempt's scan or clear its callback
             _reconnectEvents.emit(ReconnectEvent.Started)
             repeat(MAX_RECONNECT_ATTEMPTS) { attempt ->
                 if (attemptConnect()) {
