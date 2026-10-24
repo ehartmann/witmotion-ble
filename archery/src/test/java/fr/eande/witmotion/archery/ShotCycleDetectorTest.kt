@@ -198,4 +198,18 @@ class ShotCycleDetectorTest {
         val idle = List(100) { sample(it * 20L) }
         assertThat(ShotCycleDetector.detectAll(idle.asSequence())).isEmpty()
     }
+
+    @Test
+    fun `the shot callback runs outside the detector lock`() {
+        var readFinishedInCallback = false
+        lateinit var detector: ShotCycleDetector
+        detector = ShotCycleDetector(quickAnalyzer, afterReleaseMs = 400) { shot ->
+            detectedShots.add(shot)
+            Thread { detector.bufferedSamples }.apply { start(); join(1_000); readFinishedInCallback = !isAlive }
+        }
+        detector.shot()
+
+        assertThat(detectedShots).hasSize(1)
+        assertThat(readFinishedInCallback).isTrue()
+    }
 }
