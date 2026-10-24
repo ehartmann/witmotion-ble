@@ -212,4 +212,14 @@ class ShotCycleDetectorTest {
         assertThat(detectedShots).hasSize(1)
         assertThat(readFinishedInCallback).isTrue()
     }
+
+    @Test
+    fun `timestamps restarting from zero reset the buffer`() {
+        val detector = detector()
+        repeat(500) { detector.onSample(sample(1_000_000L + it * 20L)) }
+        detector.onSample(sample(0))
+        detector.onSample(sample(20))
+
+        assertThat(detector.bufferedSamples).isEqualTo(2)
+    }
 }

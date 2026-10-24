@@ -75,6 +75,8 @@ public class ShotCycleDetector(
     }
 
     private fun process(sample: ImuSample): DetectedShot? {
+        // timestamps restart from 0 after ImuSensorManager.resetRecordingTimestamp
+        if (buffer.isNotEmpty() && sample.timestamp < buffer.last().timestamp) reset()
         buffer.add(sample)
         if (shotStartIndex == null) {
             val keepFrom = buffer.indexOfFirst { sample.timestamp - it.timestamp <= idleKeepMs }
