@@ -578,14 +578,11 @@ public class ImuSensorManager(private val context: Context) {
             for ((register, readback) in registerReadbacks) {
                 val code = registers.firstOrNull { it.startRegister == register }?.values?.get(0) ?: continue
                 Log.d(TAG, "${readback.name} register: 0x%02X (%s)".format(code, readback.describe(code) ?: "?"))
-                _linkStats.update(readback.store(code))
-            }
-            registers.firstOrNull { it.startRegister == REG_OUTPUT_RATE }?.let { reply ->
-                val mismatch = OutputRate.fromCode(reply.values[0]) != outputRate
-                _linkStats.update { it.copy(rateMismatch = mismatch) }
+                val mismatch = register == REG_OUTPUT_RATE && OutputRate.fromCode(code) != outputRate
+                _linkStats.update { readback.store(code)(it).let { s -> if (register == REG_OUTPUT_RATE) s.copy(rateMismatch = mismatch) else s } }
                 if (mismatch && !rateRewritten) {
                     rateRewritten = true
-                    Log.w(TAG, "Output rate is 0x%02X, not $outputRate: writing it again".format(reply.values[0]))
+                    Log.w(TAG, "Output rate is 0x%02X, not $outputRate: writing it again".format(code))
                     configureRate()
                 }
             }
