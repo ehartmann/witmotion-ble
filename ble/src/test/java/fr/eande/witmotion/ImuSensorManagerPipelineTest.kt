@@ -46,6 +46,19 @@ class ImuSensorManagerPipelineTest {
     }
 
     @Test
+    fun `a failing sample listener does not starve the others`() {
+        val recorded = mutableListOf<ImuSample>()
+        h.manager.addSampleListener { error("closed DB") }
+        h.manager.addSampleListener { recorded += it }
+        h.connect()
+
+        h.notify(GattHarness.frame(1000) + GattHarness.frame(2000))
+
+        assertThat(recorded).hasSize(2)
+        assertThat(h.manager.lastSample.value).isEqualTo(recorded.last())
+    }
+
+    @Test
     fun `register replies update the codes in linkStats`() {
         h.connect()
 

@@ -561,7 +561,11 @@ class ImuSensorManager(private val context: Context) {
                     lastSampleTimestamp
                 )
                 lastSampleTimestamp = samples.last().timestamp
-                samples.forEach { sample -> sampleListeners.forEach { it(sample) } }
+                samples.forEach { sample ->
+                    sampleListeners.forEach { listener ->
+                        runCatching { listener(sample) }.onFailure { Log.e(TAG, "sample listener failed", it) }
+                    }
+                }
                 _lastSample.value = samples.last()
             }
         }
