@@ -158,19 +158,15 @@ class BowMovementAnalyzer(
 
         // Release metrics
         val releaseScore = if (releaseSegment != null) {
-            val releaseSamples = samples.subList(releaseSegment.startIndex,
-                minOf(releaseSegment.endIndex + 1, samples.size))
-            val maxAccelSpike = releaseSamples.zipWithNext().maxOfOrNull { (a, b) ->
-                accelSpikeMagnitude(b, a)
-            } ?: 0f
-            // Lower spike = cleaner release (paradoxical: we want a clean break)
-            // Actually: a clean release has a sharp, brief spike then calm
-            // Score based on how quickly the spike resolves
-            val spikeCount = releaseSamples.count { s ->
-                val spike = accelSpikeMagnitude(s, releaseSamples.getOrNull(releaseSamples.indexOf(s) - 1))
-                spike > releaseAccelThreshold * 0.5f
+            // A clean release has a sharp, brief spike then calm: 10 points per 20 ms above half the
+            // release threshold, whatever the sampling rate
+            var msAbove = 0L
+            for (i in releaseSegment.startIndex..minOf(releaseSegment.endIndex, samples.lastIndex)) {
+                if (i > 0 && accelJump(samples, i) > releaseAccelThreshold * 0.5f) {
+                    msAbove += samples[i].timestamp - samples[i - 1].timestamp
+                }
             }
-            (100f - spikeCount * 10f).coerceIn(0f, 100f)
+            (100f - msAbove * 0.5f).coerceIn(0f, 100f)
         } else 0f
 
         // Follow-through metrics

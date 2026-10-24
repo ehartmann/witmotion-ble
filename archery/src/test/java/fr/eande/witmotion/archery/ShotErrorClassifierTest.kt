@@ -93,4 +93,31 @@ class ShotErrorClassifierTest {
         assertThat(result.primaryError).isEqualTo(ShotErrorClassifier.ShotError.CLEAN)
         assertThat(result.confidence).isLessThan(0.5f)
     }
+
+    @Test
+    fun `the same flinch is detected at 50, 100 and 200 Hz`() {
+        for (period in listOf(20L, 10L, 5L)) {
+            val samples = mutableListOf<ImuSample>()
+            var t = 0L
+            while (t < 200) { samples.add(sample(t, gyro = floatArrayOf(25f, 0f, 0f))); t += period }
+            while (t < 900) { samples.add(sample(t, gyro = floatArrayOf(0.5f, 0f, 0f))); t += period }
+            val start = t
+            // 8 g in 20 ms, held 40 ms, back in 20 ms
+            while (t < start + 700) {
+                val dt = (t - start).toFloat()
+                val z = when {
+                    dt <= 20f -> 1f + 8f * dt / 20f
+                    dt <= 60f -> 9f
+                    dt <= 80f -> 9f - 8f * (dt - 60f) / 20f
+                    else -> 1f
+                }
+                samples.add(sample(t, gyro = floatArrayOf(0.5f, 0f, 0f), accel = floatArrayOf(0f, 0f, z)))
+                t += period
+            }
+
+            val result = ShotErrorClassifier.classify(samples, BowMovementAnalyzer().detectPhases(samples))
+
+            assertThat(result.primaryError).isEqualTo(ShotErrorClassifier.ShotError.FLINCH)
+        }
+    }
 }

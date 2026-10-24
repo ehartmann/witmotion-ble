@@ -60,7 +60,7 @@ object ShotErrorClassifier {
         if (anticipation > 0.5f) errors.add(ShotError.ANTICIPATION to anticipation)
 
         // Flinch: large sudden jerk at release
-        val flinch = checkFlinch(releaseSamples)
+        val flinch = checkFlinch(samples, releaseSegment)
         if (flinch > 0.5f) errors.add(ShotError.FLINCH to flinch)
 
         // Breaking wrist: roll change > threshold during release
@@ -113,12 +113,12 @@ object ShotErrorClassifier {
     /**
      * Flinch: very large acceleration spike at release.
      */
-    private fun checkFlinch(releaseSamples: List<ImuSample>?): Float {
-        if (releaseSamples == null || releaseSamples.size < 2) return 0f
+    private fun checkFlinch(samples: List<ImuSample>, releaseSegment: BowMovementAnalyzer.PhaseSegment?): Float {
+        if (releaseSegment == null) return 0f
 
-        val maxSpike = releaseSamples.zipWithNext().maxOfOrNull { (a, b) ->
-            accelDelta(a, b)
-        } ?: 0f
+        val analyzer = BowMovementAnalyzer()
+        val maxSpike = (releaseSegment.startIndex..minOf(releaseSegment.endIndex, samples.lastIndex))
+            .maxOfOrNull { analyzer.accelJump(samples, it) } ?: 0f
 
         // Normal release: 2-5g spike. Flinch: > 8g spike
         return ((maxSpike - 5f) / 5f).coerceIn(0f, 1f)
@@ -176,15 +176,6 @@ object ShotErrorClassifier {
     private fun gyroMag(sample: ImuSample): Float {
         val g = sample.gyroscope ?: return 0f
         return sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
-    }
-
-    private fun accelDelta(a: ImuSample, b: ImuSample): Float {
-        val aa = a.acceleration ?: return 0f
-        val ba = b.acceleration ?: return 0f
-        val dx = ba[0] - aa[0]
-        val dy = ba[1] - aa[1]
-        val dz = ba[2] - aa[2]
-        return sqrt(dx * dx + dy * dy + dz * dz)
     }
 
     private fun <T> List<T>.subListSafe(from: Int, to: Int): List<T> {
