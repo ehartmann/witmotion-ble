@@ -343,4 +343,27 @@ class ImuAutoConnectorTest {
             ImuAutoConnector.ReconnectEvent.Exhausted
         ).inOrder()
     }
+
+    @Test
+    fun `an external connect that fails after Exhausted gets its own retry`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+        val events = mutableListOf<ImuAutoConnector.ReconnectEvent>()
+        backgroundScope.launch { connector.reconnectEvents.collect { events.add(it) } }
+        runCurrent()
+        connector.retryAfterUnexpectedDisconnect()
+        advanceTimeBy(fullRetrySequenceMs)
+        runCurrent()
+        assertThat(events).containsExactly(ImuAutoConnector.ReconnectEvent.Started, ImuAutoConnector.ReconnectEvent.Exhausted).inOrder()
+
+        connectionState.value = ImuSensorManager.ConnectionState.CONNECTING // SensorPresenceService.connectByAddress
+        runCurrent()
+        connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
+        unexpectedDisconnects.tryEmit(Unit)
+        runCurrent()
+
+        assertThat(events.last()).isEqualTo(ImuAutoConnector.ReconnectEvent.Started)
+        verify(exactly = 4) { sensorManager.startScan(any()) }
+    }
 }

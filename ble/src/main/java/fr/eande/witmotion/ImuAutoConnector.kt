@@ -58,7 +58,7 @@ public class ImuAutoConnector(
             sensorManager.unexpectedDisconnects.collect { retryAfterUnexpectedDisconnect() }
         }
         scope.launch {
-            sensorManager.connectionState.collect { if (it == ConnectionState.CONNECTED) retryExhausted = false }
+            sensorManager.connectionState.collect { if (it == ConnectionState.CONNECTED || it == ConnectionState.CONNECTING) retryExhausted = false }
         }
     }
 
