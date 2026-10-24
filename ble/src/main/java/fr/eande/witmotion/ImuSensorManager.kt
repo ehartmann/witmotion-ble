@@ -126,6 +126,15 @@ public class ImuSensorManager(private val context: Context) {
         val rateMismatch: Boolean = false
     )
 
+    private class Readback(val name: String, val describe: (Int) -> Any?, val store: (Int) -> (LinkStats) -> LinkStats)
+
+    private val registerReadbacks: Map<Int, Readback> = mapOf(
+        REG_OUTPUT_RATE to Readback("Output rate", { c -> OutputRate.fromCode(c)?.let { "${it.hz} Hz" } }) { c -> { it.copy(outputRateCode = c) } },
+        REG_INSTALLATION to Readback("Installation", Installation::fromCode) { c -> { it.copy(installationCode = c) } },
+        REG_BANDWIDTH to Readback("Bandwidth", { c -> Bandwidth.fromCode(c)?.let { "${it.hz} Hz" } }) { c -> { it.copy(bandwidthCode = c) } },
+        REG_ALGORITHM to Readback("Algorithm", Algorithm::fromCode) { c -> { it.copy(algorithmCode = c) } }
+    )
+
     private val _linkStats = MutableStateFlow(LinkStats())
     public val linkStats: StateFlow<LinkStats> = _linkStats.asStateFlow()
 
@@ -566,31 +575,19 @@ public class ImuSensorManager(private val context: Context) {
                 _batteryLevel.value = ImuDataParser.batteryPercent(it.values[0])
                 Log.d(TAG, "Battery: ${it.values[0] / 100f} V, ${_batteryLevel.value}%")
             }
+            for ((register, readback) in registerReadbacks) {
+                val code = registers.firstOrNull { it.startRegister == register }?.values?.get(0) ?: continue
+                Log.d(TAG, "${readback.name} register: 0x%02X (%s)".format(code, readback.describe(code) ?: "?"))
+                _linkStats.update(readback.store(code))
+            }
             registers.firstOrNull { it.startRegister == REG_OUTPUT_RATE }?.let { reply ->
-                val code = reply.values[0]
-                Log.d(TAG, "Output rate register: 0x%02X (%s Hz)".format(code, OutputRate.fromCode(code)?.hz ?: "?"))
-                val mismatch = OutputRate.fromCode(code) != outputRate
-                _linkStats.update { it.copy(outputRateCode = code, rateMismatch = mismatch) }
+                val mismatch = OutputRate.fromCode(reply.values[0]) != outputRate
+                _linkStats.update { it.copy(rateMismatch = mismatch) }
                 if (mismatch && !rateRewritten) {
                     rateRewritten = true
-                    Log.w(TAG, "Output rate is 0x%02X, not $outputRate: writing it again".format(code))
+                    Log.w(TAG, "Output rate is 0x%02X, not $outputRate: writing it again".format(reply.values[0]))
                     configureRate()
                 }
-            }
-            registers.firstOrNull { it.startRegister == REG_INSTALLATION }?.let { reply ->
-                val code = reply.values[0]
-                Log.d(TAG, "Installation register: 0x%02X (%s)".format(code, Installation.fromCode(code) ?: "?"))
-                _linkStats.update { it.copy(installationCode = code) }
-            }
-            registers.firstOrNull { it.startRegister == REG_BANDWIDTH }?.let { reply ->
-                val code = reply.values[0]
-                Log.d(TAG, "Bandwidth register: 0x%02X (%s Hz)".format(code, Bandwidth.fromCode(code)?.hz ?: "?"))
-                _linkStats.update { it.copy(bandwidthCode = code) }
-            }
-            registers.firstOrNull { it.startRegister == REG_ALGORITHM }?.let { reply ->
-                val code = reply.values[0]
-                Log.d(TAG, "Algorithm register: 0x%02X (%s)".format(code, Algorithm.fromCode(code) ?: "?"))
-                _linkStats.update { it.copy(algorithmCode = code) }
             }
             _linkStats.update {
                 it.copy(
