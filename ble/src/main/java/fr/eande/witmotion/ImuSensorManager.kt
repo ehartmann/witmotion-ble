@@ -117,7 +117,9 @@ class ImuSensorManager(private val context: Context) {
         /** Register 0x24 read back after setting the algorithm; see [Algorithm.fromCode]. */
         val algorithmCode: Int? = null,
         /** Register 0x1F read back after setting the bandwidth; see [Bandwidth.fromCode]. The protocol does not document this read. */
-        val bandwidthCode: Int? = null
+        val bandwidthCode: Int? = null,
+        /** The rate read back differs from [outputRate], also after one rewrite: the timestamps are suspect. */
+        val rateMismatch: Boolean = false
     )
 
     private val _linkStats = MutableStateFlow(LinkStats())
@@ -143,6 +145,7 @@ class ImuSensorManager(private val context: Context) {
     @Volatile private var recordingStartTime = 0L
     private var lastSampleTimestamp = Long.MIN_VALUE
     @Volatile private var discoveryRetried = false
+    @Volatile private var rateRewritten = false
     private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScan() }
@@ -342,6 +345,7 @@ class ImuSensorManager(private val context: Context) {
                     Log.d(TAG, "Connected, discovering services...")
                     _linkStats.value = LinkStats()
                     discoveryRetried = false
+                    rateRewritten = false
                     gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -487,7 +491,13 @@ class ImuSensorManager(private val context: Context) {
             registers.firstOrNull { it.startRegister == REG_OUTPUT_RATE }?.let { reply ->
                 val code = reply.values[0]
                 Log.d(TAG, "Output rate register: 0x%02X (%s Hz)".format(code, OutputRate.fromCode(code)?.hz ?: "?"))
-                _linkStats.update { it.copy(outputRateCode = code) }
+                val mismatch = OutputRate.fromCode(code) != outputRate
+                _linkStats.update { it.copy(outputRateCode = code, rateMismatch = mismatch) }
+                if (mismatch && !rateRewritten) {
+                    rateRewritten = true
+                    Log.w(TAG, "Output rate is 0x%02X, not $outputRate: writing it again".format(code))
+                    configureRate()
+                }
             }
             registers.firstOrNull { it.startRegister == REG_INSTALLATION }?.let { reply ->
                 val code = reply.values[0]
@@ -556,6 +566,7 @@ class ImuSensorManager(private val context: Context) {
     var outputRate: OutputRate = OutputRate.HZ_50
         set(value) {
             field = value
+            rateRewritten = false
             if (isConnected()) configureRate()
         }
 

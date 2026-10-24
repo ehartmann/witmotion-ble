@@ -189,7 +189,7 @@ class ImuDataParserTest {
     }
 
     /** 200 Hz: 8 frames per notification every 40 ms, arriving up to 15 ms early or late. */
-    private fun jitteryStream(seconds: Int, gapAtMs: Long? = null): List<Pair<Long, List<ImuSample>>> {
+    private fun jitteryStream(seconds: Int, gapAtMs: Long? = null, assumedPeriodMs: Long = 5): List<Pair<Long, List<ImuSample>>> {
         val frames = (1..8).map { buildCombinedPacket(0) }.reduce(ByteArray::plus)
         val jitter = listOf(0L, 15L, -12L, 4L, -15L, 9L, -3L, 12L)
         var previous = Long.MIN_VALUE
@@ -199,7 +199,7 @@ class ImuDataParserTest {
         while (nominal <= seconds * 1_000L) {
             if (gapAtMs != null && nominal in gapAtMs until gapAtMs + 1_000) { nominal += 40; continue }
             val arrival = nominal + jitter[k++ % jitter.size]
-            val samples = ImuDataParser.packetsToSamples(ImuDataParser.parse(frames), receivedAt = arrival, periodMs = 5, previous = previous)
+            val samples = ImuDataParser.packetsToSamples(ImuDataParser.parse(frames), receivedAt = arrival, periodMs = assumedPeriodMs, previous = previous)
             previous = samples.last().timestamp
             out += arrival to samples
             nominal += 40
@@ -218,6 +218,15 @@ class ImuDataParserTest {
         val rate = (times.size - 1) * 1000.0 / (times.last() - times.first())
         assertThat(rate).isWithin(2.0).of(200.0)
         stream.forEach { (arrival, samples) -> assertThat(samples.last().timestamp - arrival).isIn(-30L..30L) }
+    }
+
+    @Test
+    fun `a sensor faster than the assumed rate does not run the clock ahead of real time`() {
+        // 200 Hz real, 50 Hz assumed (the rate write was lost)
+        val stream = jitteryStream(seconds = 10, assumedPeriodMs = 20)
+
+        stream.forEach { (arrival, samples) -> assertThat(samples.last().timestamp - arrival).isAtMost(250L) }
+        assertThat(stream.flatMap { (_, samples) -> samples.map { it.timestamp } }).isInStrictOrder()
     }
 
     @Test

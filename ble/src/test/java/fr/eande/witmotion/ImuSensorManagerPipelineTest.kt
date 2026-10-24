@@ -86,4 +86,24 @@ class ImuSensorManagerPipelineTest {
             "FF AA 69 88 B5", "FF AA 01 00 00", "FF AA 00 00 00"
         ).inOrder()
     }
+
+    @Test
+    fun `a rate read back that differs is written again once and flagged until it matches`() {
+        h.connect()
+        h.forgetWrites()
+        val rateWrites = { h.written.count { it.contentEquals(h.manager.outputRate.command) } }
+
+        h.notify(GattHarness.registerReply(0x03, OutputRate.HZ_200.code))
+        h.drain()
+        assertThat(rateWrites()).isEqualTo(1)
+        assertThat(h.manager.linkStats.value.rateMismatch).isTrue()
+
+        h.notify(GattHarness.registerReply(0x03, OutputRate.HZ_200.code))
+        h.drain()
+        assertThat(rateWrites()).isEqualTo(1)
+        assertThat(h.manager.linkStats.value.rateMismatch).isTrue()
+
+        h.notify(GattHarness.registerReply(0x03, h.manager.outputRate.code))
+        assertThat(h.manager.linkStats.value.rateMismatch).isFalse()
+    }
 }
