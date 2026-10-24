@@ -20,7 +20,7 @@ public object LiveAim {
      */
     public fun trail(samples: List<ImuSample>, windowMs: Long = DEFAULT_WINDOW_MS): List<Point> {
         val latest = samples.lastOrNull()?.timestamp ?: return emptyList()
-        val recent = samples.filter { it.euler != null && latest - it.timestamp <= windowMs }
+        val recent = samples.takeLastWhile { latest - it.timestamp <= windowMs }.filter { it.euler != null }
         if (recent.isEmpty()) return emptyList()
 
         val anchor = recent.first().euler!![2]
