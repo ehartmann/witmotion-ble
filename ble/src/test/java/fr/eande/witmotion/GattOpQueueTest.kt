@@ -117,4 +117,17 @@ class GattOpQueueTest {
 
         assertThat(ran).containsExactly("old", "fresh").inOrder()
     }
+
+    @Test
+    fun `a timeout is handed to the owner when it wants to drop the link instead of moving on`() {
+        val timedOut = mutableListOf<BluetoothGatt>()
+        val owned = GattOpQueue { timedOut += it }
+        owned.enqueue(gatt, op("lost-write"))
+        owned.enqueue(gatt, op("battery"))
+
+        idle(2_100)
+
+        assertThat(timedOut).containsExactly(gatt)
+        assertThat(ran).containsExactly("lost-write")
+    }
 }

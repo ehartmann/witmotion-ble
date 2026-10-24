@@ -5,8 +5,12 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.content.Context
+import android.os.SystemClock
 import com.google.common.truth.Truth.assertThat
+import android.bluetooth.BluetoothGatt
 import io.mockk.Runs
+import io.mockk.clearMocks
+import org.robolectric.shadows.ShadowLog
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -197,15 +201,131 @@ class ImuSensorManagerPipelineTest {
         assertThat(h.manager.connectedDevice.value).isNotNull()
     }
 
+    private fun connecting() {
+        h.manager.connect(device)
+        h.injectGatt()
+        clearMocks(h.gatt, answers = false)
+    }
+
     @Test
-    fun `a failed notification enable drops the link instead of recording nothing`() {
+    fun `a failed notification enable that still streams is connected, not dropped`() {
+        connecting()
         h.discoverServices()
 
         h.descriptorWritten(status = 133)
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTING)
+        h.notify(GattHarness.frame())
+        h.drain()
+        h.idle(30_000)
+
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+        assertThat(h.manager.connectedDevice.value).isNotNull()
+        verify(exactly = 0) { h.gatt.disconnect() }
+    }
+
+    @Test
+    fun `a notification enable that reports success but streams nothing is dropped after 5 s`() {
+        connecting()
+        h.discoverServices()
+
+        val enabledAt = SystemClock.elapsedRealtime()
+        h.descriptorWritten()
+        h.drain()
+        h.idle(4_900 - (SystemClock.elapsedRealtime() - enabledAt))
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+        h.idle(200)
 
         verify { h.gatt.disconnect() }
-        assertThat(h.manager.connectionState.value).isNotEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
-        assertThat(h.manager.connectedDevice.value).isNull()
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+    }
+
+    @Test
+    fun `a failed notification enable that streams nothing is dropped 5 s after the callback`() {
+        connecting()
+        h.discoverServices()
+
+        h.descriptorWritten(status = 133)
+        h.idle(5_100)
+
+        verify { h.gatt.disconnect() }
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+    }
+
+    @Test
+    fun `a setting changed while connecting is written once the link is up`() {
+        connecting()
+        h.discoverServices()
+
+        h.manager.outputRate = OutputRate.HZ_100
+        h.descriptorWritten()
+        h.drain()
+
+        assertThat(h.written.map(::hex)).contains(hex(OutputRate.HZ_100.command))
+        assertThat(h.written.map(::hex)).doesNotContain(hex(OutputRate.HZ_50.command))
+    }
+
+    @Test
+    fun `a lost write callback drops the link after 2 s so the reconnect re-applies everything`() {
+        h.connect()
+        h.notify(GattHarness.frame())
+        h.manager.sendCommands(byteArrayOf(1, 2, 3, 4, 5))
+
+        h.idle(1_900)
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+        h.idle(200)
+
+        verify { h.gatt.disconnect() }
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+    }
+
+    @Test
+    fun `a connectGatt that returned null does not leave the state connecting forever`() {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val drops = scope.countDrops(h.manager)
+        h.manager.connect(device)
+        h.clearGatt()
+
+        h.idle(20_100)
+
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+        assertThat(drops()).isEqualTo(1)
+        scope.cancel()
+    }
+
+    @Test
+    fun `a late descriptor callback from a closed GATT changes nothing`() {
+        connecting()
+        h.discoverServices()
+
+        h.manager.gattCallback.onDescriptorWrite(mockk<BluetoothGatt>(relaxed = true), h.cccd, BluetoothGatt.GATT_SUCCESS)
+
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTING)
+        assertThat(h.written).isEmpty()
+    }
+
+    @Test
+    fun `a sample listener that keeps failing is logged once`() {
+        h.manager.addSampleListener { error("closed DB") }
+        h.connect()
+        ShadowLog.clear()
+
+        repeat(3) { h.notify(GattHarness.frame()) }
+
+        assertThat(ShadowLog.getLogsForTag("ImuSensorManager").count { it.type == android.util.Log.ERROR }).isEqualTo(1)
+    }
+
+    @Test
+    fun `a recording reset restarts the timestamps from zero`() {
+        h.connect()
+        h.idle(5_000)
+        h.notify(GattHarness.frame())
+        val before = h.manager.lastSample.value!!.timestamp
+
+        h.manager.resetRecordingTimestamp()
+        h.notify(GattHarness.frame())
+
+        assertThat(before).isAtLeast(5_000L)
+        assertThat(h.manager.lastSample.value!!.timestamp).isAtMost(50L)
     }
 
     @Test
@@ -232,6 +352,7 @@ class ImuSensorManagerPipelineTest {
         h.manager.connect(device)
         h.injectGatt()
         h.connect()
+        h.notify(GattHarness.frame())
 
         h.idle(30_000)
 

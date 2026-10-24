@@ -30,7 +30,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Manages BLE connection to a WitMotion WT9011DCL IMU sensor.
@@ -62,6 +64,7 @@ public class ImuSensorManager(private val context: Context) {
         private const val BATTERY_REFRESH_MS = 60_000L
         private const val DISCOVERY_RETRY_MS = 500L
         private const val CONNECT_TIMEOUT_MS = 20_000L
+        private const val NO_STREAM_TIMEOUT_MS = 5_000L
         // WitMotion's SDK waits 100 ms after the unlock and after each config write
         private const val COMMAND_SPACING_MS = 100L
 
@@ -119,7 +122,7 @@ public class ImuSensorManager(private val context: Context) {
         val algorithmCode: Int? = null,
         /** Register 0x1F read back after setting the bandwidth; see [Bandwidth.fromCode]. The protocol does not document this read. */
         val bandwidthCode: Int? = null,
-        /** The rate read back differs from [outputRate], also after one rewrite: the timestamps are suspect. */
+        /** Set on the first rate read-back that differs from [outputRate] (the timestamps are suspect), cleared when a later one matches. */
         val rateMismatch: Boolean = false
     )
 
@@ -142,26 +145,68 @@ public class ImuSensorManager(private val context: Context) {
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var writeCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var userInitiatedDisconnect = false
-    private val gattOps = GattOpQueue()
-    @Volatile private var recordingStartTime = 0L
-    private var lastSampleTimestamp = Long.MIN_VALUE
+    private val gattOps = GattOpQueue { g -> dropLink(g) }
+
+    /** Both swapped together, so a reset can never meet a delivery's half-updated pair. */
+    private class RecordingClock(val start: Long, val lastSample: Long)
+    private val recordingClock = AtomicReference(RecordingClock(0L, Long.MIN_VALUE))
+    private val failedListeners: MutableSet<Any> = ConcurrentHashMap.newKeySet()
+    @Volatile private var streamSeen = false
     @Volatile private var discoveryRetried = false
     @Volatile private var rateRewritten = false
     private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScan() }
     private val connectWatchdog: Runnable = Runnable {
-        val g = gatt
-        if (_connectionState.value == ConnectionState.CONNECTING && g != null) {
+        if (_connectionState.value == ConnectionState.CONNECTING) {
             Log.e(TAG, "Connect did not complete in $CONNECT_TIMEOUT_MS ms")
-            try {
-                g.disconnect()
-            } catch (e: Exception) {
-                Log.w(TAG, "GATT disconnect failed", e)
-            }
-            // the stack may never report the drop of a link that was never up
-            gattCallback.onConnectionStateChange(g, BluetoothGatt.GATT_FAILURE, BluetoothProfile.STATE_DISCONNECTED)
+            dropLink(gatt)
         }
+    }
+    private val noStreamWatchdog: Runnable = Runnable {
+        if (!streamSeen) {
+            Log.e(TAG, "No notification $NO_STREAM_TIMEOUT_MS ms after enabling them")
+            dropLink(gatt)
+        }
+    }
+
+    /**
+     * Ends a link that is stuck as an unexpected drop. The stack may never report the end of a
+     * link that was never up, so the disconnected callback is run by hand; [g] null (connectGatt
+     * returned nothing) has no callback to run.
+     */
+    private fun dropLink(g: BluetoothGatt?) {
+        if (g == null) {
+            _connectionState.value = ConnectionState.DISCONNECTED
+            _unexpectedDisconnects.tryEmit(Unit)
+            return
+        }
+        try {
+            g.disconnect()
+        } catch (e: Exception) {
+            Log.w(TAG, "GATT disconnect failed", e)
+        }
+        gattCallback.onConnectionStateChange(g, BluetoothGatt.GATT_FAILURE, BluetoothProfile.STATE_DISCONNECTED)
+    }
+
+    /**
+     * The link is up once the notifications are enabled or the first one arrives, whichever
+     * comes first: a sensor reporting a failed enable that streams anyway must not loop.
+     * The settings are written now, so a setter called while connecting is never lost.
+     */
+    private fun markConnected(g: BluetoothGatt) {
+        if (_connectionState.value == ConnectionState.CONNECTED) return
+        mainHandler.removeCallbacks(connectWatchdog)
+        _connectionState.value = ConnectionState.CONNECTED
+        _connectedDevice.value = ImuSensorDevice(
+            address = g.device.address,
+            name = g.device.name ?: "WT9011DCL"
+        )
+        Log.d(TAG, "Connected to ${g.device.name}")
+        applySettings()
+        // Read now, then every minute: the level drains over a long session
+        mainHandler.removeCallbacks(batteryRefresh)
+        mainHandler.post(batteryRefresh)
     }
     private val batteryRefresh = object : Runnable {
         override fun run() {
@@ -183,6 +228,7 @@ public class ImuSensorManager(private val context: Context) {
 
     public fun removeSampleListener(listener: (ImuSample) -> Unit) {
         sampleListeners.remove(listener)
+        failedListeners.remove(listener)
     }
 
     /** Called when a device is discovered during scan. Used by ImuAutoConnector. */
@@ -289,6 +335,7 @@ public class ImuSensorManager(private val context: Context) {
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.CONNECTING
         mainHandler.removeCallbacks(connectWatchdog)
+        mainHandler.removeCallbacks(noStreamWatchdog)
         mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
         clockChecks.abort()
 
@@ -354,6 +401,7 @@ public class ImuSensorManager(private val context: Context) {
         gattOps.clear()
         mainHandler.removeCallbacks(batteryRefresh)
         mainHandler.removeCallbacks(connectWatchdog)
+        mainHandler.removeCallbacks(noStreamWatchdog)
         _connectionState.value = ConnectionState.DISCONNECTED
         clockChecks.abort()
         _connectedDevice.value = null
@@ -368,6 +416,7 @@ public class ImuSensorManager(private val context: Context) {
                     _linkStats.value = LinkStats()
                     discoveryRetried = false
                     rateRewritten = false
+                    streamSeen = false
                     gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -380,6 +429,7 @@ public class ImuSensorManager(private val context: Context) {
                     gattOps.clear()
                     mainHandler.removeCallbacks(batteryRefresh)
                     mainHandler.removeCallbacks(connectWatchdog)
+                    mainHandler.removeCallbacks(noStreamWatchdog)
                     if (this@ImuSensorManager.gatt == gatt) {
                         try {
                             gatt.close()
@@ -448,25 +498,17 @@ public class ImuSensorManager(private val context: Context) {
                     g.writeDescriptor(cccd)
                 }
             }
-            applySettings()
-            // Read now, then every minute: the level drains over a long session
-            mainHandler.removeCallbacks(batteryRefresh)
-            mainHandler.post(batteryRefresh)
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             Log.d(TAG, "Notifications enabled (status=$status)")
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                gatt.disconnect() // reported as an unexpected drop, so ImuAutoConnector retries
-                return
+            // a late callback from a GATT that connect() or a drop already replaced
+            if (this@ImuSensorManager.gatt != gatt) return
+            if (status == BluetoothGatt.GATT_SUCCESS) markConnected(gatt)
+            if (!streamSeen) {
+                mainHandler.removeCallbacks(noStreamWatchdog)
+                mainHandler.postDelayed(noStreamWatchdog, NO_STREAM_TIMEOUT_MS)
             }
-            mainHandler.removeCallbacks(connectWatchdog)
-            _connectionState.value = ConnectionState.CONNECTED
-            _connectedDevice.value = ImuSensorDevice(
-                address = gatt.device.address,
-                name = gatt.device.name ?: "WT9011DCL"
-            )
-            Log.d(TAG, "Connected to ${gatt.device.name}")
             gattOps.next(gatt)
         }
 
@@ -506,6 +548,11 @@ public class ImuSensorManager(private val context: Context) {
         }
 
         private fun deliverNotify(data: ByteArray) {
+            if (!streamSeen) {
+                streamSeen = true
+                mainHandler.removeCallbacks(noStreamWatchdog)
+                gatt?.let { if (_connectionState.value == ConnectionState.CONNECTING) markConnected(it) }
+            }
             val check = clockChecks.collector
             val (packets, counts, registers) = ImuDataParser.parseCounting(data, timestamps = check != null)
             if (check != null) {
@@ -554,16 +601,20 @@ public class ImuSensorManager(private val context: Context) {
                 )
             }
             if (packets.isNotEmpty()) {
+                val clock = recordingClock.get()
                 val samples = ImuDataParser.packetsToSamples(
                     packets,
-                    SystemClock.elapsedRealtime() - recordingStartTime,
+                    SystemClock.elapsedRealtime() - clock.start,
                     1000L / outputRate.hz,
-                    lastSampleTimestamp
+                    clock.lastSample
                 )
-                lastSampleTimestamp = samples.last().timestamp
+                // a reset since the read wins: its clock is not to be overwritten
+                recordingClock.compareAndSet(clock, RecordingClock(clock.start, samples.last().timestamp))
                 samples.forEach { sample ->
                     sampleListeners.forEach { listener ->
-                        runCatching { listener(sample) }.onFailure { Log.e(TAG, "sample listener failed", it) }
+                        runCatching { listener(sample) }.onFailure {
+                            if (failedListeners.add(listener)) Log.e(TAG, "sample listener failed (further failures not logged)", it)
+                        }
                     }
                 }
                 _lastSample.value = samples.last()
@@ -690,8 +741,7 @@ public class ImuSensorManager(private val context: Context) {
      * [SystemClock.elapsedRealtime] values (ms since boot).
      */
     public fun resetRecordingTimestamp() {
-        recordingStartTime = SystemClock.elapsedRealtime()
-        lastSampleTimestamp = Long.MIN_VALUE
+        recordingClock.set(RecordingClock(SystemClock.elapsedRealtime(), Long.MIN_VALUE))
     }
 
     /** Returns whether the write was started; its completion arrives in onCharacteristicWrite. */

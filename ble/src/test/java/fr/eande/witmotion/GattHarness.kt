@@ -47,6 +47,9 @@ internal class GattHarness(val manager: ImuSensorManager = ImuSensorManager(Runt
         injectGatt()
     }
 
+    /** Leaves the manager without a link, as when connectGatt returned null. */
+    fun clearGatt() = ImuSensorManager::class.java.getDeclaredField("gatt").apply { isAccessible = true }.set(manager, null)
+
     /** Makes [gatt] the manager's link again, after a connect() replaced it. */
     fun injectGatt() = ImuSensorManager::class.java.getDeclaredField("gatt").apply { isAccessible = true }.set(manager, gatt)
 

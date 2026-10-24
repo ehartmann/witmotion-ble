@@ -10,9 +10,11 @@ import android.util.Log
  * another is in flight is rejected. Each queued op returns whether it started. [enqueue]
  * starts the op at once when nothing is in flight; otherwise the op waits until the caller
  * calls [next] from the in-flight op's completion callback, or until [OP_TIMEOUT_MS] has
- * passed: the stack sometimes loses a completion callback.
+ * passed: the stack sometimes loses a completion callback. A timeout is handed to [onTimeout]
+ * (the owner drops the link, so the reconnect re-applies everything), or starts the next op
+ * when there is none.
  */
-internal class GattOpQueue {
+internal class GattOpQueue(private val onTimeout: ((BluetoothGatt) -> Unit)? = null) {
     private val ops = ArrayDeque<(BluetoothGatt) -> Boolean>()
     private var busy = false
     private var generation = 0
@@ -58,7 +60,7 @@ internal class GattOpQueue {
     private fun timeOut(gatt: BluetoothGatt, inFlight: Int) {
         if (!busy || generation != inFlight) return
         Log.w(TAG, "GATT op got no completion in $OP_TIMEOUT_MS ms, moving on")
-        next(gatt)
+        onTimeout?.invoke(gatt) ?: next(gatt)
     }
 
     private companion object {
