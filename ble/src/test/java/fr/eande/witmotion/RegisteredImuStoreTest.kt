@@ -90,4 +90,15 @@ class RegisteredImuStoreTest {
         val store2 = RegisteredImuStore(prefs)
         assertThat(store2.getAll()).hasSize(1)
     }
+
+    @Test
+    fun `concurrent registrations all survive`() {
+        val threads = List(4) { t ->
+            Thread { repeat(100) { store.register("AA:$t:$it", "imu") } }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+
+        assertThat(store.getAll()).hasSize(400)
+    }
 }

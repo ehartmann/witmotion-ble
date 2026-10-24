@@ -198,4 +198,42 @@ class ShotCycleDetectorTest {
         val idle = List(100) { sample(it * 20L) }
         assertThat(ShotCycleDetector.detectAll(idle.asSequence())).isEmpty()
     }
+
+    @Test
+    fun `the shot callback runs outside the detector lock`() {
+        var readFinishedInCallback = false
+        lateinit var detector: ShotCycleDetector
+        detector = ShotCycleDetector(quickAnalyzer, afterReleaseMs = 400) { shot ->
+            detectedShots.add(shot)
+            Thread { detector.bufferedSamples }.apply { start(); join(1_000); readFinishedInCallback = !isAlive }
+        }
+        detector.shot()
+
+        assertThat(detectedShots).hasSize(1)
+        assertThat(readFinishedInCallback).isTrue()
+    }
+
+    @Test
+    fun `timestamps restarting from zero reset the buffer`() {
+        val detector = detector()
+        repeat(500) { detector.onSample(sample(1_000_000L + it * 20L)) }
+        detector.onSample(sample(0))
+        detector.onSample(sample(20))
+
+        assertThat(detector.bufferedSamples).isEqualTo(2)
+    }
+
+    @Test
+    fun `a clock restart with a draw pending reports the dropped window`() {
+        val detector = detector()
+        var dropped = 0
+        detector.observer = object : ShotCycleDetector.Observer {
+            override fun shot(buffer: List<ImuSample>, from: Int) = Unit
+            override fun dropped(buffer: List<ImuSample>, upTo: Int, stuck: Boolean) { dropped++ }
+        }
+        detector.feed(400, 30f)
+        detector.onSample(sample(0))
+
+        assertThat(dropped).isEqualTo(1)
+    }
 }

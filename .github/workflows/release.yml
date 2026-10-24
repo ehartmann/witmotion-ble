@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check the tag is vMAJOR.MINOR.PATCH
         run: '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Tag $GITHUB_REF_NAME is not vX.Y.Z"; exit 1; }'
@@ -29,9 +29,9 @@ jobs:
         uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
 
       - name: Test and build the release artifacts
-        run: ./gradlew testDebugUnitTest publishAllPublicationsToReleaseRepository -PlibVersion="${GITHUB_REF_NAME#v}" --no-daemon
+        run: ./gradlew testDebugUnitTest lintDebug publishAllPublicationsToReleaseRepository -PlibVersion="${GITHUB_REF_NAME#v}" --no-daemon
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-repo
           path: build/release-repo/
@@ -45,7 +45,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 

@@ -17,7 +17,9 @@ import fr.eande.witmotion.ImuSample
  * draw, bow handled without shooting).
  *
  * Thread safety: [onSample] and [flush] are synchronized to allow safe calls from
- * BLE callback and main threads respectively.
+ * BLE callback and main threads respectively. `onShotDetected` is called on the thread that
+ * completed the shot (the BLE thread for [onSample]), after the lock is released: a slow
+ * consumer delays that thread but may call back into the detector from another thread.
  */
 public class ShotCycleDetector(
     private val analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
@@ -68,7 +70,16 @@ public class ShotCycleDetector(
     /** Samples held right now; for tests of the memory bound. */
     internal val bufferedSamples: Int get() = synchronized(lock) { buffer.size }
 
-    public fun onSample(sample: ImuSample): Unit = synchronized(lock) {
+    public fun onSample(sample: ImuSample) {
+        synchronized(lock) { process(sample) }?.let(onShotDetected)
+    }
+
+    private fun process(sample: ImuSample): DetectedShot? {
+        // timestamps restart from 0 after ImuSensorManager.resetRecordingTimestamp
+        if (buffer.isNotEmpty() && sample.timestamp < buffer.last().timestamp) {
+            if (shotStartIndex != null) observer?.dropped(buffer, buffer.size, stuck = false)
+            reset()
+        }
         buffer.add(sample)
         if (shotStartIndex == null) {
             val keepFrom = buffer.indexOfFirst { sample.timestamp - it.timestamp <= idleKeepMs }
@@ -78,32 +89,38 @@ public class ShotCycleDetector(
         val phases = analyzer.detectPhases(buffer)
         val start = shotStartIndex
             ?: phases.firstOrNull { it.phase == ShotPhase.DRAW }?.startIndex?.also { shotStartIndex = it }
-            ?: return
+            ?: return null
 
         val release = phases.firstOrNull { it.phase == ShotPhase.RELEASE && it.startIndex >= start }
         if (release == null) {
             if (sample.timestamp - buffer[start].timestamp > maxDrawMs) restartAtLatestDraw(phases, start)
-            return
+            return null
         }
         releaseSeen = true
         if (sample.timestamp - buffer[release.startIndex].timestamp >= afterReleaseMs) {
-            emitShot(lastDrawStart(phases, release) ?: start)
+            return emitShot(lastDrawStart(phases, release) ?: start)
         }
+        return null
     }
 
     /**
      * Call when stopping recording: emits the shot in progress if its release was seen, with
      * whatever follow-through was recorded.
      */
-    public fun flush(): Unit = synchronized(lock) {
+    public fun flush() {
+        synchronized(lock) { finish() }?.let(onShotDetected)
+    }
+
+    private fun finish(): DetectedShot? {
         val start = shotStartIndex
         if (start == null || !releaseSeen) {
             if (start != null) observer?.dropped(buffer, buffer.size, stuck = false)
-            return@synchronized reset()
+            reset()
+            return null
         }
         val phases = analyzer.detectPhases(buffer)
         val release = phases.firstOrNull { it.phase == ShotPhase.RELEASE && it.startIndex >= start }
-        emitShot(release?.let { lastDrawStart(phases, it) } ?: start)
+        return emitShot(release?.let { lastDrawStart(phases, it) } ?: start)
     }
 
     /**
@@ -131,11 +148,11 @@ public class ShotCycleDetector(
         return phases.getOrNull(phases.indexOf(hold) - 1)?.takeIf { it.phase == ShotPhase.DRAW }?.startIndex
     }
 
-    private fun emitShot(start: Int) {
+    private fun emitShot(start: Int): DetectedShot {
         observer?.shot(buffer, start)
         val shotSamples = buffer.subList(start, buffer.size).toList()
         reset()
-        onShotDetected(DetectedShot(shotSamples, analyzer.analyze(shotSamples).metrics))
+        return DetectedShot(shotSamples, analyzer.analyze(shotSamples).metrics)
     }
 
     private fun reset() {

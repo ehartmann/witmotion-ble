@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("fr.eande.witmotion:archery:0.6.0") // pulls :ble; or fr.eande.witmotion:ble alone
+implementation("fr.eande.witmotion:archery:0.6.1") // pulls :ble; or fr.eande.witmotion:ble alone
 ```
 
 To develop an app against a local checkout instead, add to its `settings.gradle.kts`
@@ -44,12 +44,12 @@ and build with `-Pwitmotion.local`; the included build then needs the same AGP v
 ### Releasing
 
 ```bash
-git tag v0.6.0 && git push origin v0.6.0
+git tag v0.6.1 && git push origin v0.6.1
 ```
 
-The Release workflow runs the unit tests, builds the AARs with that version and creates
+The Release workflow runs the unit tests and lint, builds the AARs with that version and creates
 the release, its notes listing the commits since the previous tag. Locally:
-`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.6.0` writes the same
+`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.6.1` writes the same
 files to `build/release-repo/`.
 
 ### API
@@ -177,6 +177,19 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 (as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Changelog
+
+### 0.6.1
+
+Fixes and small clean-ups; no API change.
+
+- **`ShotCycleDetector` callback contract.** `onShotDetected` now runs outside the detector lock, on the thread that completed the shot (the BLE thread for `onSample`, the caller's for `flush`). A slow consumer still delays that thread, but the callback is no longer mutually exclusive with other detector calls: it may call the detector from another thread, and `onSample`/`flush` can run while it executes.
+- A `ShotCycleDetector` reused across `resetRecordingTimestamp` (timestamps restarting from 0) now resets instead of keeping every old sample; a draw pending at that moment is reported to the diagnostics as a dropped window.
+- Parser: after lost bytes, a `55 61` found inside a payload is no longer taken for a frame (they carry no checksum); a combined frame found after skipped bytes must be followed by a header or end the notification. Fewer phantom samples on a damaged link.
+- `RegisteredImuStore.register` and `remove` are synchronized: concurrent calls no longer lose entries.
+- `ImuAutoConnector` scan state (`isScanning`, `onDeviceDiscovered`) is visible across threads.
+- `LiveAim.trail` only reads the samples inside the window instead of filtering the whole list on every frame.
+- The rate register read-back updates `outputRateCode` and `rateMismatch` together; internal clean-ups (register read-back table, dead code).
+- Release workflow: `checkout` and `upload-artifact` pinned by SHA, lint runs before publishing.
 
 ### 0.6.0
 

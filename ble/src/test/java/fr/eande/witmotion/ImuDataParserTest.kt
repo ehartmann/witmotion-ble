@@ -272,6 +272,27 @@ class ImuDataParserTest {
     }
 
     @Test
+    fun `a 55 61 inside a payload after a lost byte is not taken for a frame`() {
+        // ax = 0x6155 puts 55 61 in the payload; the first header byte of frame A is lost
+        val lost = buildCombinedPacket(0x6155, 0, 0, 0, 0, 0, 0, 0, 0).copyOfRange(1, 20)
+        val real = buildCombinedPacket(0, 0, 16384, 0, 0, 0, 0, 0, 0)
+
+        val (packets, counts) = ImuDataParser.parseCounting(lost + real)
+
+        assertThat(counts.combined).isEqualTo(1)
+        assertThat(packets.first { it.type == ImuDataParser.TYPE_ACCELERATION }.values[2]).isWithin(0.01f).of(8f)
+    }
+
+    @Test
+    fun `a combined frame after a stray byte is still taken when it ends the notification`() {
+        val real = buildCombinedPacket(0, 0, 16384, 0, 0, 0, 0, 0, 0)
+
+        val (_, counts) = ImuDataParser.parseCounting(byteArrayOf(7) + real)
+
+        assertThat(counts).isEqualTo(ImuDataParser.FrameCounts(combined = 1, legacy = 0, skippedBytes = 1))
+    }
+
+    @Test
     fun `counts a BLE 5 combined frame`() {
         val (_, counts) = ImuDataParser.parseCounting(buildCombinedPacket(0, 0, 16384))
         assertThat(counts).isEqualTo(ImuDataParser.FrameCounts(combined = 1, legacy = 0, skippedBytes = 0))

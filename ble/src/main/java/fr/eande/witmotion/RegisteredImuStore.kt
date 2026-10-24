@@ -40,14 +40,14 @@ public class RegisteredImuStore(private val prefs: SharedPreferences) {
         }
     }
 
-    public fun register(address: String, name: String) {
+    public fun register(address: String, name: String): Unit = synchronized(this) {
         val devices = getAll().toMutableList()
         devices.removeAll { it.address == address }
         devices.add(RegisteredDevice(address, name))
         save(devices)
     }
 
-    public fun remove(address: String) {
+    public fun remove(address: String): Unit = synchronized(this) {
         val devices = getAll().toMutableList()
         devices.removeAll { it.address == address }
         save(devices)
