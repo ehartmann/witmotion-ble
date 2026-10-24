@@ -14,17 +14,17 @@ import kotlin.math.abs
  * traces and grouped rings mean consistent shots. Shows the last [MAX_SHOTS] shots it is given.
  * Draws no localizable text besides the callers' labels; see [ShotComparison] for the numbers.
  */
-class ShotComparisonView @JvmOverloads constructor(
+public class ShotComparisonView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    companion object {
-        const val MAX_SHOTS = 8
+    public companion object {
+        public const val MAX_SHOTS: Int = 8
     }
 
-    data class ShotTrace(
+    public data class ShotTrace(
         val label: String,
         val points: List<ShotTraceView.TracePoint>
     )
@@ -50,7 +50,7 @@ class ShotComparisonView @JvmOverloads constructor(
         Color.rgb(121, 85, 72)     // Brown
     )
 
-    fun setShots(traces: List<ShotTrace>) {
+    public fun setShots(traces: List<ShotTrace>) {
         shots = traces.takeLast(MAX_SHOTS)
         invalidate()
     }

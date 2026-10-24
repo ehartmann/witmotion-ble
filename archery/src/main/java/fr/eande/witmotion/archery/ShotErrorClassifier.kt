@@ -10,23 +10,21 @@ import kotlin.math.sqrt
  * Inspired by Mantis X8's error classification system. Each error type
  * is detected by analyzing specific movement patterns during the shot phases.
  */
-object ShotErrorClassifier {
+public object ShotErrorClassifier {
 
     /**
      * Known archery shooting errors and their descriptions.
      */
-    enum class ShotError(val label: String, val description: String) {
+    public enum class ShotError(public val label: String, public val description: String) {
         ANTICIPATION("Anticipation", "Movement before the release — archer expects the shot and tenses up"),
         FLINCH("Flinch", "Sudden jerky movement at release — common in beginners"),
         BREAKING_WRIST("Breaking wrist", "Wrist rotation during or after release — grip too tight"),
         DROPPING_ARM("Dropping arm", "Bow arm drops immediately after release — no follow-through"),
-        PUSHING("Pushing", "Forward push at release — trying to 'help' the arrow"),
-        HEELING("Heeling", "Consistent low impacts — bow arm pushing forward and down"),
         CREEPING("Creeping", "Slow forward draw hand movement during hold — losing draw length"),
         CLEAN("Clean shot", "Good execution with minimal parasitic movement")
     }
 
-    data class ClassificationResult(
+    public data class ClassificationResult(
         val primaryError: ShotError,
         val confidence: Float,      // 0-1
         val secondaryError: ShotError? = null,
@@ -36,7 +34,7 @@ object ShotErrorClassifier {
     /**
      * Classify a shot from IMU samples and detected phases.
      */
-    fun classify(
+    public fun classify(
         samples: List<ImuSample>,
         phases: List<BowMovementAnalyzer.PhaseSegment>
     ): ClassificationResult {
@@ -60,7 +58,7 @@ object ShotErrorClassifier {
         if (anticipation > 0.5f) errors.add(ShotError.ANTICIPATION to anticipation)
 
         // Flinch: large sudden jerk at release
-        val flinch = checkFlinch(releaseSamples)
+        val flinch = checkFlinch(samples, releaseSegment)
         if (flinch > 0.5f) errors.add(ShotError.FLINCH to flinch)
 
         // Breaking wrist: roll change > threshold during release
@@ -75,7 +73,15 @@ object ShotErrorClassifier {
         val creeping = checkCreeping(holdSamples)
         if (creeping > 0.5f) errors.add(ShotError.CREEPING to creeping)
 
-        // No errors → clean shot
+        // No error found: a clean verdict needs every input the checks read
+        val missing = listOfNotNull(
+            "No release".takeIf { releaseSegment == null },
+            "No follow-through".takeIf { ftSegment == null },
+            "No euler angles".takeIf { samples.none { it.euler != null } }
+        )
+        if (errors.isEmpty() && missing.isNotEmpty()) {
+            return ClassificationResult(ShotError.CLEAN, 0.3f, details = missing.joinToString())
+        }
         if (errors.isEmpty()) {
             return ClassificationResult(ShotError.CLEAN, 0.9f, details = "Good shot execution")
         }
@@ -113,12 +119,12 @@ object ShotErrorClassifier {
     /**
      * Flinch: very large acceleration spike at release.
      */
-    private fun checkFlinch(releaseSamples: List<ImuSample>?): Float {
-        if (releaseSamples == null || releaseSamples.size < 2) return 0f
+    private fun checkFlinch(samples: List<ImuSample>, releaseSegment: BowMovementAnalyzer.PhaseSegment?): Float {
+        if (releaseSegment == null) return 0f
 
-        val maxSpike = releaseSamples.zipWithNext().maxOfOrNull { (a, b) ->
-            accelDelta(a, b)
-        } ?: 0f
+        val analyzer = BowMovementAnalyzer()
+        val maxSpike = (releaseSegment.startIndex..minOf(releaseSegment.endIndex, samples.lastIndex))
+            .maxOfOrNull { analyzer.accelJump(samples, it) } ?: 0f
 
         // Normal release: 2-5g spike. Flinch: > 8g spike
         return ((maxSpike - 5f) / 5f).coerceIn(0f, 1f)
@@ -130,12 +136,12 @@ object ShotErrorClassifier {
     private fun checkBreakingWrist(holdSamples: List<ImuSample>, releaseSamples: List<ImuSample>?): Float {
         if (releaseSamples == null) return 0f
 
-        val holdRoll = holdSamples.mapNotNull { it.euler?.get(0) }.average().toFloat()
-        val releaseRoll = releaseSamples.mapNotNull { it.euler?.get(0) }.average().toFloat()
+        val holdRoll = circularMean(holdSamples.mapNotNull { it.euler?.get(0) })
+        val releaseRoll = circularMean(releaseSamples.mapNotNull { it.euler?.get(0) })
 
         if (holdRoll.isNaN() || releaseRoll.isNaN()) return 0f
 
-        val rollChange = abs(releaseRoll - holdRoll)
+        val rollChange = abs(wrapDegrees(releaseRoll - holdRoll))
         return ((rollChange - 3f) / 7f).coerceIn(0f, 1f)
     }
 
@@ -176,15 +182,6 @@ object ShotErrorClassifier {
     private fun gyroMag(sample: ImuSample): Float {
         val g = sample.gyroscope ?: return 0f
         return sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
-    }
-
-    private fun accelDelta(a: ImuSample, b: ImuSample): Float {
-        val aa = a.acceleration ?: return 0f
-        val ba = b.acceleration ?: return 0f
-        val dx = ba[0] - aa[0]
-        val dy = ba[1] - aa[1]
-        val dz = ba[2] - aa[2]
-        return sqrt(dx * dx + dy * dy + dz * dz)
     }
 
     private fun <T> List<T>.subListSafe(from: Int, to: Int): List<T> {

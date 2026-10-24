@@ -37,4 +37,13 @@ class ImuCalibrationHelperTest {
         assertThat(Installation.fromCode(0x01)).isEqualTo(Installation.VERTICAL)
         assertThat(Installation.fromCode(0x02)).isNull()
     }
+
+    @Test
+    fun `mutating a returned command does not change the next one`() {
+        ImuSensorManager.UNLOCK[0] = 0
+        ImuCalibrationHelper.CAL_EXIT[0] = 0
+
+        assertThat(hex(ImuSensorManager.UNLOCK)).isEqualTo("FF AA 69 88 B5")
+        assertThat(hex(ImuCalibrationHelper.CAL_EXIT)).isEqualTo("FF AA 01 00 00")
+    }
 }

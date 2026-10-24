@@ -1,13 +1,17 @@
 package fr.eande.witmotion
 
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import fr.eande.witmotion.ImuSensorManager.ConnectionState
 
 /**
  * Scans for registered IMU devices and auto-connects to the first one found (or, on request,
@@ -18,29 +22,34 @@ import kotlinx.coroutines.launch
  * singleton held by WitnessApp, like [ImuSensorManager] itself) and retries with [retryAfterUnexpectedDisconnect]
  * when the sensor drops mid-session instead of leaving it disconnected until the app restarts.
  */
-class ImuAutoConnector(
+public class ImuAutoConnector(
     private val sensorManager: ImuSensorManager,
     private val store: RegisteredImuStore,
     private val scope: CoroutineScope
 ) {
-    companion object {
+    public companion object {
         private const val TAG = "ImuAutoConnector"
         private const val SCAN_DURATION_MS = 5000L
+        private const val CONNECT_TIMEOUT_MS = 25_000L
         private const val MAX_RECONNECT_ATTEMPTS = 3
         private const val RECONNECT_BACKOFF_MS = 3000L
     }
 
     /** Surfaced so a screen can show a Snackbar while a mid-session reconnect is in flight. */
-    sealed interface ReconnectEvent {
-        data object Started : ReconnectEvent
-        data object Succeeded : ReconnectEvent
-        data object Exhausted : ReconnectEvent
+    public sealed interface ReconnectEvent {
+        public data object Started : ReconnectEvent
+        public data object Succeeded : ReconnectEvent
+        public data object Exhausted : ReconnectEvent
     }
 
     private var autoConnectJob: Job? = null
+    private var retryJob: Job? = null
+
+    /** Set when a retry gave up: the drop of its own last connect must not start another one. */
+    @Volatile private var retryExhausted = false
 
     private val _reconnectEvents = MutableSharedFlow<ReconnectEvent>(extraBufferCapacity = 1)
-    val reconnectEvents: SharedFlow<ReconnectEvent> = _reconnectEvents.asSharedFlow()
+    public val reconnectEvents: SharedFlow<ReconnectEvent> = _reconnectEvents.asSharedFlow()
 
     init {
         // shortcut: one collector for the process lifetime since WitnessApp creates this class
@@ -48,42 +57,56 @@ class ImuAutoConnector(
         scope.launch {
             sensorManager.unexpectedDisconnects.collect { retryAfterUnexpectedDisconnect() }
         }
+        scope.launch {
+            sensorManager.connectionState.collect { if (it == ConnectionState.CONNECTED || it == ConnectionState.CONNECTING) retryExhausted = false }
+        }
     }
 
     /**
      * Single scan-and-connect attempt against registered devices: the first one found, or with
      * [onlyIfSingle] the only one that answered during the whole scan (none when several did).
+     * True once the link is up; false when nothing was found or the connect failed or took
+     * more than [CONNECT_TIMEOUT_MS].
      */
     private suspend fun attemptConnect(onlyIfSingle: Boolean = false): Boolean {
         if (sensorManager.isConnected()) return true
         if (store.getAll().isEmpty()) return false
 
-        var connected = false
+        var connecting = false
+        val chosen = CompletableDeferred<Unit>()
         val found = linkedMapOf<String, ImuSensorDevice>()
         sensorManager.onDeviceDiscovered = { device ->
-            if (!connected && store.isRegistered(device.address)) {
+            if (!connecting && store.isRegistered(device.address)) {
                 if (onlyIfSingle) {
                     found[device.address] = device
                 } else {
-                    connected = true
+                    connecting = true
                     Log.d(TAG, "Found registered device: ${device.name} (${device.address})")
                     sensorManager.connect(device)
+                    chosen.complete(Unit)
                 }
             }
         }
-        sensorManager.startScan(store.getAll().map { it.address })
-        delay(SCAN_DURATION_MS)
-        sensorManager.onDeviceDiscovered = null
-        if (onlyIfSingle) {
-            found.values.singleOrNull()?.let { device ->
-                connected = true
-                Log.d(TAG, "Only registered device found: ${device.name} (${device.address})")
-                sensorManager.stopScan()
-                sensorManager.connect(device)
-            } ?: Log.d(TAG, "${found.size} registered devices found: not choosing")
+        try {
+            sensorManager.startScan(store.getAll().map { it.address })
+            withTimeoutOrNull(SCAN_DURATION_MS) { chosen.await() }
+            sensorManager.onDeviceDiscovered = null
+            if (onlyIfSingle) {
+                found.values.singleOrNull()?.let { device ->
+                    connecting = true
+                    Log.d(TAG, "Only registered device found: ${device.name} (${device.address})")
+                    sensorManager.stopScan()
+                    sensorManager.connect(device)
+                } ?: Log.d(TAG, "${found.size} registered devices found: not choosing")
+            }
+            if (!connecting) return false
+            return withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                sensorManager.connectionState.first { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
+            } == ConnectionState.CONNECTED
+        } finally {
+            sensorManager.onDeviceDiscovered = null
+            sensorManager.stopScan()
         }
-        if (!connected) sensorManager.stopScan()
-        return connected
     }
 
     /**
@@ -91,11 +114,12 @@ class ImuAutoConnector(
      * a caller on a timer must not cut short) is returned instead of a new one. Null when there
      * is nothing to attempt.
      */
-    fun tryAutoConnect(onlyIfSingle: Boolean = false): Job? {
+    public fun tryAutoConnect(onlyIfSingle: Boolean = false): Job? {
         if (sensorManager.isConnected() || sensorManager.isConnecting()) return null
         if (store.getAll().isEmpty()) return null
         autoConnectJob?.takeIf { it.isActive }?.let { return it }
 
+        retryExhausted = false
         return scope.launch {
             Log.d(TAG, "Starting auto-connect scan...")
             if (!attemptConnect(onlyIfSingle)) {
@@ -109,12 +133,15 @@ class ImuAutoConnector(
      * unprompted disconnect. Safe to call redundantly: idempotent-guarded by
      * [attemptConnect] and cancels any in-flight attempt of its own first.
      */
-    fun retryAfterUnexpectedDisconnect() {
+    public fun retryAfterUnexpectedDisconnect() {
         if (sensorManager.isConnected()) return
         if (store.getAll().isEmpty()) return
+        // a drop during a retry is handled by the attempt running: restarting would reset the budget
+        if (retryJob?.isActive == true || retryExhausted) return
 
-        autoConnectJob?.cancel()
-        autoConnectJob = scope.launch {
+        val previous = autoConnectJob?.also { it.cancel() }
+        val job = scope.launch {
+            previous?.join() // its cleanup must not stop this attempt's scan or clear its callback
             _reconnectEvents.emit(ReconnectEvent.Started)
             repeat(MAX_RECONNECT_ATTEMPTS) { attempt ->
                 if (attemptConnect()) {
@@ -126,11 +153,14 @@ class ImuAutoConnector(
                 }
             }
             Log.d(TAG, "Reconnect exhausted after $MAX_RECONNECT_ATTEMPTS attempts")
+            retryExhausted = true
             _reconnectEvents.emit(ReconnectEvent.Exhausted)
         }
+        autoConnectJob = job
+        retryJob = job
     }
 
-    fun cancel() {
+    public fun cancel() {
         autoConnectJob?.cancel()
         autoConnectJob = null
         sensorManager.onDeviceDiscovered = null

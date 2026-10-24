@@ -7,7 +7,7 @@ package fr.eande.witmotion
  * to the last ImuSensorManager.resetRecordingTimestamp call, if any): unlike the wall clock it
  * never jumps when the phone adjusts its time, so differences between samples stay valid.
  */
-data class ImuSample(
+public data class ImuSample(
     val timestamp: Long,
     val acceleration: FloatArray? = null,  // [ax, ay, az] in g
     val gyroscope: FloatArray? = null,     // [wx, wy, wz] in °/s
@@ -18,7 +18,17 @@ data class ImuSample(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is ImuSample) return false
-        return timestamp == other.timestamp
+        return timestamp == other.timestamp && sensorTimeMs == other.sensorTimeMs &&
+            acceleration.contentEquals(other.acceleration) && gyroscope.contentEquals(other.gyroscope) &&
+            euler.contentEquals(other.euler) && quaternion.contentEquals(other.quaternion)
     }
-    override fun hashCode(): Int = timestamp.hashCode()
+
+    override fun hashCode(): Int {
+        var h = timestamp.hashCode()
+        h = 31 * h + sensorTimeMs.hashCode()
+        h = 31 * h + acceleration.contentHashCode()
+        h = 31 * h + gyroscope.contentHashCode()
+        h = 31 * h + euler.contentHashCode()
+        return 31 * h + quaternion.contentHashCode()
+    }
 }

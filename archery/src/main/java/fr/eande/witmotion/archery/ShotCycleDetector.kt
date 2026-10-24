@@ -19,24 +19,24 @@ import fr.eande.witmotion.ImuSample
  * Thread safety: [onSample] and [flush] are synchronized to allow safe calls from
  * BLE callback and main threads respectively.
  */
-class ShotCycleDetector(
+public class ShotCycleDetector(
     private val analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
     private val afterReleaseMs: Long = 3_000,
     private val maxDrawMs: Long = 30_000,
     private val idleKeepMs: Long = 2_000,
     private val onShotDetected: (DetectedShot) -> Unit
 ) {
-    data class DetectedShot(
+    public data class DetectedShot(
         val samples: List<ImuSample>,
         val metrics: BowMovementMetrics?
     )
 
-    companion object {
+    public companion object {
         /**
          * Runs detection over a finished recording, including a shot cut short by its end.
          * A Sequence lets callers stream a long recording instead of loading it whole.
          */
-        fun detectAll(
+        public fun detectAll(
             samples: Sequence<ImuSample>,
             analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
             afterReleaseMs: Long = 3_000
@@ -68,7 +68,7 @@ class ShotCycleDetector(
     /** Samples held right now; for tests of the memory bound. */
     internal val bufferedSamples: Int get() = synchronized(lock) { buffer.size }
 
-    fun onSample(sample: ImuSample): Unit = synchronized(lock) {
+    public fun onSample(sample: ImuSample): Unit = synchronized(lock) {
         buffer.add(sample)
         if (shotStartIndex == null) {
             val keepFrom = buffer.indexOfFirst { sample.timestamp - it.timestamp <= idleKeepMs }
@@ -95,7 +95,7 @@ class ShotCycleDetector(
      * Call when stopping recording: emits the shot in progress if its release was seen, with
      * whatever follow-through was recorded.
      */
-    fun flush() = synchronized(lock) {
+    public fun flush(): Unit = synchronized(lock) {
         val start = shotStartIndex
         if (start == null || !releaseSeen) {
             if (start != null) observer?.dropped(buffer, buffer.size, stuck = false)

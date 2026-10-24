@@ -19,7 +19,7 @@ import kotlin.math.sqrt
  * - Release score: based on acceleration spike magnitude (lower = cleaner)
  * - Follow-through score: based on return to hold position
  */
-class BowMovementAnalyzer(
+public class BowMovementAnalyzer(
     internal val holdThreshold: Float = 5f,        // °/s — below this = hold
     internal val drawThreshold: Float = 20f,        // °/s — above this = drawing
     internal val releaseAccelThreshold: Float = 2f, // g — spike above this = release
@@ -32,12 +32,12 @@ class BowMovementAnalyzer(
     internal val jumpWindowMs: Long = 20
 ) {
 
-    data class ShotAnalysis(
+    public data class ShotAnalysis(
         val phases: List<PhaseSegment>,
         val metrics: BowMovementMetrics?
     )
 
-    data class PhaseSegment(
+    public data class PhaseSegment(
         val phase: ShotPhase,
         val startIndex: Int,
         val endIndex: Int
@@ -47,7 +47,7 @@ class BowMovementAnalyzer(
      * Analyze a sequence of IMU samples to detect phases and compute metrics.
      * Samples must be sorted by timestamp.
      */
-    fun analyze(samples: List<ImuSample>): ShotAnalysis {
+    public fun analyze(samples: List<ImuSample>): ShotAnalysis {
         if (samples.size < 10) return ShotAnalysis(emptyList(), null)
 
         val phases = detectPhases(samples)
@@ -59,7 +59,7 @@ class BowMovementAnalyzer(
     /**
      * Detect shot phases from gyroscope and accelerometer data.
      */
-    fun detectPhases(samples: List<ImuSample>): List<PhaseSegment> {
+    public fun detectPhases(samples: List<ImuSample>): List<PhaseSegment> {
         val segments = mutableListOf<PhaseSegment>()
         var currentPhase = ShotPhase.IDLE
         var phaseStart = 0
@@ -137,7 +137,7 @@ class BowMovementAnalyzer(
     /**
      * Compute per-shot metrics from the detected phases.
      */
-    fun computeMetrics(samples: List<ImuSample>, phases: List<PhaseSegment>): BowMovementMetrics? {
+    public fun computeMetrics(samples: List<ImuSample>, phases: List<PhaseSegment>): BowMovementMetrics? {
         val holdSegment = phases.find { it.phase == ShotPhase.HOLD } ?: return null
         val releaseSegment = phases.find { it.phase == ShotPhase.RELEASE }
         val ftSegment = phases.find { it.phase == ShotPhase.FOLLOW_THROUGH }
@@ -153,24 +153,20 @@ class BowMovementAnalyzer(
         } else 0L
 
         // Cant angle (mean roll during hold)
-        val cantAngle = holdSamples.mapNotNull { it.euler?.get(0) }.average().toFloat()
+        val cantAngle = circularMean(holdSamples.mapNotNull { it.euler?.get(0) })
             .let { if (it.isNaN()) 0f else it }
 
         // Release metrics
         val releaseScore = if (releaseSegment != null) {
-            val releaseSamples = samples.subList(releaseSegment.startIndex,
-                minOf(releaseSegment.endIndex + 1, samples.size))
-            val maxAccelSpike = releaseSamples.zipWithNext().maxOfOrNull { (a, b) ->
-                accelSpikeMagnitude(b, a)
-            } ?: 0f
-            // Lower spike = cleaner release (paradoxical: we want a clean break)
-            // Actually: a clean release has a sharp, brief spike then calm
-            // Score based on how quickly the spike resolves
-            val spikeCount = releaseSamples.count { s ->
-                val spike = accelSpikeMagnitude(s, releaseSamples.getOrNull(releaseSamples.indexOf(s) - 1))
-                spike > releaseAccelThreshold * 0.5f
+            // A clean release has a sharp, brief spike then calm: 10 points per 20 ms above half the
+            // release threshold, whatever the sampling rate
+            var msAbove = 0L
+            for (i in releaseSegment.startIndex..minOf(releaseSegment.endIndex, samples.lastIndex)) {
+                if (i > 0 && accelJump(samples, i) > releaseAccelThreshold * 0.5f) {
+                    msAbove += minOf(samples[i].timestamp - samples[i - 1].timestamp, jumpWindowMs)
+                }
             }
-            (100f - spikeCount * 10f).coerceIn(0f, 100f)
+            (100f - msAbove * 0.5f).coerceIn(0f, 100f)
         } else 0f
 
         // Follow-through metrics
@@ -208,7 +204,7 @@ class BowMovementAnalyzer(
         maxJumpWithin(samples, from, windowMs) > releaseAccelThreshold
 
     /** Largest 20 ms acceleration jump, in g, from [releaseIndex] over [releaseWindowMs]: the release shock of a shot. */
-    fun releaseJumpG(samples: List<ImuSample>, releaseIndex: Int): Float =
+    public fun releaseJumpG(samples: List<ImuSample>, releaseIndex: Int): Float =
         maxJumpWithin(samples, releaseIndex, releaseWindowMs)
 
     /** Largest [accelJump] of the samples from [from] to [windowMs] after it. */

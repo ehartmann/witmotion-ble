@@ -1,5 +1,7 @@
 package fr.eande.witmotion
 
+import kotlin.math.abs
+
 /**
  * Parses WitMotion WT9011DCL BLE packet data.
  *
@@ -13,7 +15,7 @@ package fr.eande.witmotion
  * sensor packs several 55 61 frames into one (2 at 50 Hz, 4 at 100 Hz).
  * This parser extracts all valid packets and returns typed ImuSample fields.
  */
-object ImuDataParser {
+internal object ImuDataParser {
 
     const val PACKET_SIZE = 11
     const val COMBINED_PACKET_SIZE = 20
@@ -191,7 +193,9 @@ object ImuDataParser {
      * eighth of the way toward the time its arrival implies (the last sample at [receivedAt],
      * each earlier one a period before), so arrival jitter does not show while the clock still
      * tracks the sensor's actual rate. Samples are at least half a period apart. After a link gap
-     * (the clock more than [GAP_MS] behind) the clock restarts at the arrival times. Without a
+     * (the clock more than [GAP_MS] behind) the clock restarts at the arrival times; a clock more
+     * than [GAP_MS] ahead (a sensor faster than [periodMs] says) is held to one millisecond a
+     * sample until the arrival times catch up, as timestamps never go back. Without a
      * [previous] sample, the arrival times are used as they are.
      */
     fun packetsToSamples(
@@ -208,7 +212,7 @@ object ImuDataParser {
         var last = previous
         return groups.mapIndexed { i, group ->
             val arrival = receivedAt - (groups.size - 1 - i) * periodMs
-            val t = if (last == Long.MIN_VALUE || arrival - (last + periodMs) > GAP_MS) {
+            val t = if (last == Long.MIN_VALUE || abs(arrival - (last + periodMs)) > GAP_MS) {
                 maxOf(arrival, if (last == Long.MIN_VALUE) Long.MIN_VALUE else last + 1)
             } else {
                 val regular = last + periodMs
@@ -222,7 +226,7 @@ object ImuDataParser {
     /** Fraction of the gap to the arrival time each sample closes. */
     private const val CLOCK_PULL = 8
 
-    /** Behind the arrival by more than this, the clock restarts: the link dropped. */
+    /** Behind the arrival by more than this, the clock restarts: the link dropped. Ahead by more, it waits for the arrival. */
     private const val GAP_MS = 250L
 
     /**

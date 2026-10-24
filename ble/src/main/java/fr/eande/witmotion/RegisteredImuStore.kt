@@ -10,14 +10,14 @@ import org.json.JSONObject
  * Persists registered IMU devices in SharedPreferences.
  * Stored as a JSON array of {address, name} under [PREF_KEY].
  */
-class RegisteredImuStore(private val prefs: SharedPreferences) {
+public class RegisteredImuStore(private val prefs: SharedPreferences) {
 
-    companion object {
-        const val PREF_KEY = "registered_imu_devices"
+    public companion object {
+        public const val PREF_KEY: String = "registered_imu_devices"
         private const val TAG = "RegisteredImuStore"
     }
 
-    data class RegisteredDevice(
+    public data class RegisteredDevice(
         val address: String,
         val name: String
     )
@@ -26,7 +26,7 @@ class RegisteredImuStore(private val prefs: SharedPreferences) {
      * Unreadable entries are dropped (the user re-registers the sensor): a release build that
      * stored this list with Gson under R8 may have written obfuscated field names.
      */
-    fun getAll(): List<RegisteredDevice> {
+    public fun getAll(): List<RegisteredDevice> {
         val json = prefs.getString(PREF_KEY, null) ?: return emptyList()
         return try {
             val array = JSONArray(json)
@@ -40,20 +40,20 @@ class RegisteredImuStore(private val prefs: SharedPreferences) {
         }
     }
 
-    fun register(address: String, name: String) {
+    public fun register(address: String, name: String) {
         val devices = getAll().toMutableList()
         devices.removeAll { it.address == address }
         devices.add(RegisteredDevice(address, name))
         save(devices)
     }
 
-    fun remove(address: String) {
+    public fun remove(address: String) {
         val devices = getAll().toMutableList()
         devices.removeAll { it.address == address }
         save(devices)
     }
 
-    fun isRegistered(address: String): Boolean =
+    public fun isRegistered(address: String): Boolean =
         getAll().any { it.address == address }
 
     private fun save(devices: List<RegisteredDevice>) {

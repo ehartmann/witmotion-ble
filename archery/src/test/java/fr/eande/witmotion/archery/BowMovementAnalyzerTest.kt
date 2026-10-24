@@ -265,4 +265,51 @@ class BowMovementAnalyzerTest {
         val samples = (0..100).map { sample(time = it * 10L) }
         assertThat(analyzer.releaseJumpG(samples, 50)).isLessThan(0.1f)
     }
+
+    @Test
+    fun `release score of the same release stays within 15 points at 50, 100 and 200 Hz`() {
+        val scores = listOf(20L, 10L, 5L).map { period ->
+            val samples = mutableListOf<ImuSample>()
+            var t = 0L
+            while (t < 300) { samples += sample(t, gyro = floatArrayOf(25f, 0f, 0f)); t += period }
+            while (t < 700) { samples += sample(t, gyro = floatArrayOf(1f, 0f, 0f)); t += period }
+            val start = t
+            // 8 g in 20 ms, held 40 ms, back in 20 ms
+            while (t < start + 400) {
+                val dt = (t - start).toFloat()
+                val z = when {
+                    dt <= 20f -> 1f + 8f * dt / 20f
+                    dt <= 60f -> 9f
+                    dt <= 80f -> 9f - 8f * (dt - 60f) / 20f
+                    else -> 1f
+                }
+                samples += sample(t, gyro = floatArrayOf(1f, 0f, 0f), accel = floatArrayOf(0f, 0f, z))
+                t += period
+            }
+            analyzer.computeMetrics(samples, analyzer.detectPhases(samples))!!.releaseScore
+        }
+
+        assertThat(scores.max() - scores.min()).isAtMost(15f)
+    }
+
+    @Test
+    fun `a link gap just before the release start does not zero the release score`() {
+        fun score(gapMs: Long): Float {
+            val samples = mutableListOf<ImuSample>()
+            var t = 0L
+            while (t < 300) { samples += sample(t, gyro = floatArrayOf(25f, 0f, 0f)); t += 10 }
+            while (t < 700) { samples += sample(t, gyro = floatArrayOf(1f, 0f, 0f)); t += 10 }
+            val start = t + gapMs - 10
+            t = start + 10
+            while (t < start + 400) {
+                val dt = (t - start).toFloat()
+                val z = if (dt <= 20f) 1f + 8f * dt / 20f else if (dt <= 60f) 9f else if (dt <= 80f) 9f - 8f * (dt - 60f) / 20f else 1f
+                samples += sample(t, gyro = floatArrayOf(1f, 0f, 0f), accel = floatArrayOf(0f, 0f, z))
+                t += 10
+            }
+            return analyzer.computeMetrics(samples, analyzer.detectPhases(samples))!!.releaseScore
+        }
+
+        assertThat(score(gapMs = 200)).isAtLeast(score(gapMs = 0) - 20f)
+    }
 }
