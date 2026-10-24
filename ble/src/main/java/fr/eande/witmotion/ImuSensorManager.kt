@@ -163,7 +163,7 @@ public class ImuSensorManager(private val context: Context) {
     @Volatile private var streamSeen = false
     @Volatile private var discoveryRetried = false
     @Volatile private var rateRewritten = false
-    private var isScanning = false
+    @Volatile private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScan() }
     private val connectWatchdog: Runnable = Runnable {
@@ -241,7 +241,7 @@ public class ImuSensorManager(private val context: Context) {
     }
 
     /** Called when a device is discovered during scan. Used by ImuAutoConnector. */
-    internal var onDeviceDiscovered: ((ImuSensorDevice) -> Unit)? = null
+    @Volatile internal var onDeviceDiscovered: ((ImuSensorDevice) -> Unit)? = null
 
     public enum class ConnectionState {
         DISCONNECTED, CONNECTING, CONNECTED, SCANNING
