@@ -222,4 +222,18 @@ class ShotCycleDetectorTest {
 
         assertThat(detector.bufferedSamples).isEqualTo(2)
     }
+
+    @Test
+    fun `a clock restart with a draw pending reports the dropped window`() {
+        val detector = detector()
+        var dropped = 0
+        detector.observer = object : ShotCycleDetector.Observer {
+            override fun shot(buffer: List<ImuSample>, from: Int) = Unit
+            override fun dropped(buffer: List<ImuSample>, upTo: Int, stuck: Boolean) { dropped++ }
+        }
+        detector.feed(400, 30f)
+        detector.onSample(sample(0))
+
+        assertThat(dropped).isEqualTo(1)
+    }
 }
