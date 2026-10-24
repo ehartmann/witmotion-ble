@@ -1,7 +1,6 @@
 package fr.eande.witmotion.archery
 
 import fr.eande.witmotion.ImuSample
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -258,6 +257,4 @@ public class BowMovementAnalyzer(
         val variance = values.map { (it - mean) * (it - mean) }.average().toFloat()
         return sqrt(variance)
     }
-
-    private fun gyroMagnitude(imuSample: ImuSample, unused: Unit? = null): Float = gyroMagnitude(imuSample)
 }
