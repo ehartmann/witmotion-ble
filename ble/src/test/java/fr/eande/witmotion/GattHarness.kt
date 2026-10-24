@@ -44,8 +44,11 @@ internal class GattHarness(val manager: ImuSensorManager = ImuSensorManager(Runt
         }
         every { writeChar.setValue(any<ByteArray>()) } answers { legacyValue = firstArg(); true }
         every { gatt.writeCharacteristic(writeChar) } answers { record(legacyValue); true }
-        ImuSensorManager::class.java.getDeclaredField("gatt").apply { isAccessible = true }.set(manager, gatt)
+        injectGatt()
     }
+
+    /** Makes [gatt] the manager's link again, after a connect() replaced it. */
+    fun injectGatt() = ImuSensorManager::class.java.getDeclaredField("gatt").apply { isAccessible = true }.set(manager, gatt)
 
     private fun record(bytes: ByteArray) {
         written += bytes.copyOf()

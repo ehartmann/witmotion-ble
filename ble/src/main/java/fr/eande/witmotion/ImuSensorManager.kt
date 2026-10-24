@@ -61,6 +61,7 @@ class ImuSensorManager(private val context: Context) {
         private const val SCAN_TIMEOUT_MS = 10_000L
         private const val BATTERY_REFRESH_MS = 60_000L
         private const val DISCOVERY_RETRY_MS = 500L
+        private const val CONNECT_TIMEOUT_MS = 20_000L
         // WitMotion's SDK waits 100 ms after the unlock and after each config write
         private const val COMMAND_SPACING_MS = 100L
 
@@ -149,6 +150,19 @@ class ImuSensorManager(private val context: Context) {
     private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScan() }
+    private val connectWatchdog: Runnable = Runnable {
+        val g = gatt
+        if (_connectionState.value == ConnectionState.CONNECTING && g != null) {
+            Log.e(TAG, "Connect did not complete in $CONNECT_TIMEOUT_MS ms")
+            try {
+                g.disconnect()
+            } catch (e: Exception) {
+                Log.w(TAG, "GATT disconnect failed", e)
+            }
+            // the stack may never report the drop of a link that was never up
+            gattCallback.onConnectionStateChange(g, BluetoothGatt.GATT_FAILURE, BluetoothProfile.STATE_DISCONNECTED)
+        }
+    }
     private val batteryRefresh = object : Runnable {
         override fun run() {
             readBattery()
@@ -274,6 +288,8 @@ class ImuSensorManager(private val context: Context) {
         stopScan()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.CONNECTING
+        mainHandler.removeCallbacks(connectWatchdog)
+        mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
         clockChecks.abort()
 
         gatt?.let { old ->
@@ -337,6 +353,7 @@ class ImuSensorManager(private val context: Context) {
         writeCharacteristic = null
         gattOps.clear()
         mainHandler.removeCallbacks(batteryRefresh)
+        mainHandler.removeCallbacks(connectWatchdog)
         _connectionState.value = ConnectionState.DISCONNECTED
         clockChecks.abort()
         _connectedDevice.value = null
@@ -362,6 +379,7 @@ class ImuSensorManager(private val context: Context) {
                     writeCharacteristic = null
                     gattOps.clear()
                     mainHandler.removeCallbacks(batteryRefresh)
+                    mainHandler.removeCallbacks(connectWatchdog)
                     if (this@ImuSensorManager.gatt == gatt) {
                         try {
                             gatt.close()
@@ -403,6 +421,14 @@ class ImuSensorManager(private val context: Context) {
                 return
             }
 
+            val notifyChar = service.getCharacteristic(NOTIFY_CHAR_UUID)
+            val cccd = notifyChar?.getDescriptor(CCCD_UUID)
+            if (notifyChar == null || cccd == null) {
+                Log.e(TAG, "IMU notify characteristic not found")
+                gatt.disconnect()
+                return
+            }
+
             // The default connection interval (about 30 ms) caps the link below the sensor's 50 Hz;
             // asked once discovery is done, as a request racing the discovery is not always honored
             val fast = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
@@ -411,36 +437,36 @@ class ImuSensorManager(private val context: Context) {
             writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID)
 
             gattOps.clear()
-            service.getCharacteristic(NOTIFY_CHAR_UUID)?.let { notifyChar ->
-                gatt.setCharacteristicNotification(notifyChar, true)
-                notifyChar.getDescriptor(CCCD_UUID)?.let { descriptor ->
-                    gattOps.enqueue(gatt) { g ->
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            g.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
-                        } else {
-                            @Suppress("DEPRECATION")
-                            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                            @Suppress("DEPRECATION")
-                            g.writeDescriptor(descriptor)
-                        }
-                    }
+            gatt.setCharacteristicNotification(notifyChar, true)
+            gattOps.enqueue(gatt) { g ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION")
+                    g.writeDescriptor(cccd)
                 }
             }
             applySettings()
             // Read now, then every minute: the level drains over a long session
             mainHandler.removeCallbacks(batteryRefresh)
             mainHandler.post(batteryRefresh)
+        }
 
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            Log.d(TAG, "Notifications enabled (status=$status)")
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                gatt.disconnect() // reported as an unexpected drop, so ImuAutoConnector retries
+                return
+            }
+            mainHandler.removeCallbacks(connectWatchdog)
             _connectionState.value = ConnectionState.CONNECTED
             _connectedDevice.value = ImuSensorDevice(
                 address = gatt.device.address,
                 name = gatt.device.name ?: "WT9011DCL"
             )
             Log.d(TAG, "Connected to ${gatt.device.name}")
-        }
-
-        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            Log.d(TAG, "Notifications enabled (status=$status)")
             gattOps.next(gatt)
         }
 

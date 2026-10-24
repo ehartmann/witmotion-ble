@@ -11,6 +11,11 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.verify
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -156,5 +161,69 @@ class ImuSensorManagerPipelineTest {
 
         manager.stopScan()
         assertThat(manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+    }
+
+    private val device = ImuSensorDevice(address = "AA:BB:CC:DD:EE:FF", name = "WT9011DCL")
+
+    private fun CoroutineScope.countDrops(manager: ImuSensorManager): () -> Int {
+        var drops = 0
+        launch { manager.unexpectedDisconnects.collect { drops++ } }
+        return { drops }
+    }
+
+    @Test
+    fun `the link is not connected until the notifications are enabled`() {
+        h.manager.connect(device)
+        h.injectGatt()
+        h.discoverServices()
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTING)
+
+        h.descriptorWritten()
+
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+        assertThat(h.manager.connectedDevice.value).isNotNull()
+    }
+
+    @Test
+    fun `a failed notification enable drops the link instead of recording nothing`() {
+        h.discoverServices()
+
+        h.descriptorWritten(status = 133)
+
+        verify { h.gatt.disconnect() }
+        assertThat(h.manager.connectionState.value).isNotEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+        assertThat(h.manager.connectedDevice.value).isNull()
+    }
+
+    @Test
+    fun `a connect that never completes is dropped as unexpected after 20 s`() {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val drops = scope.countDrops(h.manager)
+        h.manager.connect(device)
+        h.injectGatt()
+
+        h.idle(19_900)
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTING)
+        h.idle(200)
+
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+        assertThat(drops()).isEqualTo(1)
+        verify { h.gatt.disconnect() }
+        scope.cancel()
+    }
+
+    @Test
+    fun `a link that came up is not dropped by the connect watchdog`() {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val drops = scope.countDrops(h.manager)
+        h.manager.connect(device)
+        h.injectGatt()
+        h.connect()
+
+        h.idle(30_000)
+
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+        assertThat(drops()).isEqualTo(0)
+        scope.cancel()
     }
 }
