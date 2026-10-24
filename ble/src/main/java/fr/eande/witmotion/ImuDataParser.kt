@@ -90,11 +90,13 @@ internal object ImuDataParser {
         var legacy = 0
         var skipped = 0
         var timestampStride = 0
+        var resyncing = false
 
         while (offset + PACKET_SIZE <= data.size) {
             if (data[offset] != HEADER) {
                 offset++
                 skipped++
+                resyncing = true
                 continue
             }
 
@@ -112,6 +114,14 @@ internal object ImuDataParser {
             }
 
             if (!timestamps && data[offset + 1] == TYPE_COMBINED && offset + COMBINED_PACKET_SIZE <= data.size) {
+                // no checksum: after lost bytes a 55 61 inside a payload must not pass for a frame
+                val end = offset + COMBINED_PACKET_SIZE
+                if (resyncing && end < data.size && data[end] != HEADER) {
+                    offset++
+                    skipped++
+                    continue
+                }
+                resyncing = false
                 packets.add(ParsedPacket(TYPE_ACCELERATION, parseAcceleration(data, offset)))
                 packets.add(ParsedPacket(TYPE_GYROSCOPE, parseGyroscope(data, offset + 6)))
                 packets.add(ParsedPacket(TYPE_EULER, parseEuler(data, offset + 12)))
@@ -129,6 +139,7 @@ internal object ImuDataParser {
             if (!verifyChecksum(data, offset)) {
                 offset++
                 skipped++
+                resyncing = true
                 continue
             }
             legacy++
