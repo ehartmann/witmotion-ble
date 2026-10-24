@@ -31,6 +31,16 @@ The detection thresholds (5 and 20 °/s, 2 g) were not checked against real shot
 
 Effort: **S** under an hour, **M** about half a day, **L** a day or more. ✔ marks findings checked against the code a second time.
 
+
+## Status (2026-10-24, end of day)
+
+| Items | PR | Release |
+|---|---|---|
+| L1–L10, plus the review follow-ups (CONNECTED on the enable or the first notification, settings written at link-up, bounded reconnect budget, GATT op timeout drops the link, atomic clock reset, release-score gap cap) | #6 | 0.6.0 |
+| Nice to have: dead code, one register table, shot callback outside the lock, detector reset on a clock restart, parser resync check, LiveAim trail, volatile/synchronized fields, release workflow pins and lint | #7 | 0.6.1 |
+
+Not done: closing the GATT only after the disconnect callback (#18, only if seen on the phone). Still to check on the device: the new connect behaviour with the real sensor (first range session).
+
 ## Summary
 
 The pure logic is solid, independent of the sample rate where it matters, and well tested:
