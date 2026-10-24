@@ -1,7 +1,7 @@
 package fr.eande.witmotion
 
 /** Accelerometer and gyroscope filter cut-off, register 0x1F (WT9011DCL-BT50 communication protocol v25-04-06, section 3.9). */
-enum class Bandwidth(val hz: Int, val code: Int) {
+public enum class Bandwidth(public val hz: Int, public val code: Int) {
     HZ_256(256, 0),
     HZ_188(188, 1),
     HZ_98(98, 2),
@@ -11,14 +11,14 @@ enum class Bandwidth(val hz: Int, val code: Int) {
     HZ_5(5, 6);
 
     /** `FF AA 1F BW 00`; needs the config unlock first. */
-    val command: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x1F, code.toByte(), 0x00)
+    public val command: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x1F, code.toByte(), 0x00)
 
-    companion object {
+    public companion object {
         /** Bits 15:4 of the register are reserved, so only the low nibble is read. */
-        fun fromCode(code: Int): Bandwidth? = entries.firstOrNull { it.code == code and 0x0F }
+        public fun fromCode(code: Int): Bandwidth? = entries.firstOrNull { it.code == code and 0x0F }
 
         /** 98 Hz from a 200 Hz output rate up, 42 Hz from 100 Hz, 20 Hz (the sensor's default) below. */
-        fun suggestedFor(rateHz: Int): Bandwidth = when {
+        public fun suggestedFor(rateHz: Int): Bandwidth = when {
             rateHz >= 200 -> HZ_98
             rateHz >= 100 -> HZ_42
             else -> HZ_20
@@ -27,10 +27,10 @@ enum class Bandwidth(val hz: Int, val code: Int) {
 }
 
 /** What the 0x61 frames carry, register 0x96 (section 3.11): the angles, or the sensor's millisecond counter in their place. */
-enum class OutputContent(val code: Int) {
+public enum class OutputContent(public val code: Int) {
     ANGLES(0),
     TIMESTAMP(2);
 
     /** `FF AA 96 CONTENT 00`; needs the config unlock first. */
-    val command: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x96.toByte(), code.toByte(), 0x00)
+    public val command: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x96.toByte(), code.toByte(), 0x00)
 }

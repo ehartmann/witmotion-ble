@@ -15,7 +15,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * of the rest. [aborted] means the link dropped or reconnected during the check: the other
  * fields are partial.
  */
-data class ClockCheckResult(
+public data class ClockCheckResult(
     val samples: Int,
     val sensorRateHz: Double,
     val driftPpm: Double,

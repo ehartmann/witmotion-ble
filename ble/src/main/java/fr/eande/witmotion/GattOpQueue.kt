@@ -12,7 +12,7 @@ import android.util.Log
  * calls [next] from the in-flight op's completion callback, or until [OP_TIMEOUT_MS] has
  * passed: the stack sometimes loses a completion callback.
  */
-class GattOpQueue {
+internal class GattOpQueue {
     private val ops = ArrayDeque<(BluetoothGatt) -> Boolean>()
     private var busy = false
     private var generation = 0

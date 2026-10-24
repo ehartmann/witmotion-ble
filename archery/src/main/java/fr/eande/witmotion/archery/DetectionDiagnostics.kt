@@ -3,7 +3,7 @@ package fr.eande.witmotion.archery
 import fr.eande.witmotion.ImuSample
 
 /** What [DetectionDiagnostics.explain] found in a recording. Times are sample timestamps in ms. */
-data class DetectionReport(
+public data class DetectionReport(
     /** The shots [ShotCycleDetector.detectAll] emits on the same samples, as time windows. */
     val shots: List<DetectedWindow>,
     /** Draws that did not become a shot, each with the reason. */
@@ -12,7 +12,7 @@ data class DetectionReport(
     val weakSpikes: List<Spike>
 )
 
-data class DetectedWindow(val drawStartMs: Long, val releaseMs: Long, val endMs: Long)
+public data class DetectedWindow(val drawStartMs: Long, val releaseMs: Long, val endMs: Long)
 
 /**
  * A draw that did not become a shot. [holdMs] and [holdMeanGyroDps] describe the longest hold of the
@@ -21,7 +21,7 @@ data class DetectedWindow(val drawStartMs: Long, val releaseMs: Long, val endMs:
  * analyzer's own look-ahead for a release whose gyro crosses first) when movement ended it, or the
  * cut of the window or recording otherwise; over the whole attempt when there was no hold.
  */
-data class NearMiss(
+public data class NearMiss(
     val drawStartMs: Long,
     val endMs: Long,
     val maxDrawGyroDps: Float,
@@ -48,9 +48,9 @@ data class NearMiss(
  *    on the window (a let-down, a stuck draw). It is not reported for the short broken holds before a
  *    shot: that is normal aiming. With a confirmed hold the reason is [SPIKE_TOO_WEAK] or [NO_SPIKE].
  */
-enum class Reason { HOLD_TOO_SHORT, SPIKE_TOO_WEAK, NO_SPIKE, MOVED_DURING_HOLD, DRAW_TOO_LONG }
+public enum class Reason { HOLD_TOO_SHORT, SPIKE_TOO_WEAK, NO_SPIKE, MOVED_DURING_HOLD, DRAW_TOO_LONG }
 
-data class Spike(val tMs: Long, val jumpG: Float)
+public data class Spike(val tMs: Long, val jumpG: Float)
 
 /**
  * Explains a recording with the detector's own thresholds and math: it runs a [ShotCycleDetector] and
@@ -66,8 +66,8 @@ data class Spike(val tMs: Long, val jumpG: Float)
  * Memory is the detector's buffer (at most `maxDrawMs` plus `afterReleaseMs` of samples) plus the
  * samples of the last 20 ms: nothing grows with the length of the recording but the report.
  */
-object DetectionDiagnostics {
-    fun explain(
+public object DetectionDiagnostics {
+    public fun explain(
         samples: Sequence<ImuSample>,
         analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
         weakSpikeG: Float = 1f,

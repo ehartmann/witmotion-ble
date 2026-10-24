@@ -22,12 +22,12 @@ import fr.eande.witmotion.ImuSensorManager.ConnectionState
  * singleton held by WitnessApp, like [ImuSensorManager] itself) and retries with [retryAfterUnexpectedDisconnect]
  * when the sensor drops mid-session instead of leaving it disconnected until the app restarts.
  */
-class ImuAutoConnector(
+public class ImuAutoConnector(
     private val sensorManager: ImuSensorManager,
     private val store: RegisteredImuStore,
     private val scope: CoroutineScope
 ) {
-    companion object {
+    public companion object {
         private const val TAG = "ImuAutoConnector"
         private const val SCAN_DURATION_MS = 5000L
         private const val CONNECT_TIMEOUT_MS = 15_000L
@@ -36,16 +36,16 @@ class ImuAutoConnector(
     }
 
     /** Surfaced so a screen can show a Snackbar while a mid-session reconnect is in flight. */
-    sealed interface ReconnectEvent {
-        data object Started : ReconnectEvent
-        data object Succeeded : ReconnectEvent
-        data object Exhausted : ReconnectEvent
+    public sealed interface ReconnectEvent {
+        public data object Started : ReconnectEvent
+        public data object Succeeded : ReconnectEvent
+        public data object Exhausted : ReconnectEvent
     }
 
     private var autoConnectJob: Job? = null
 
     private val _reconnectEvents = MutableSharedFlow<ReconnectEvent>(extraBufferCapacity = 1)
-    val reconnectEvents: SharedFlow<ReconnectEvent> = _reconnectEvents.asSharedFlow()
+    public val reconnectEvents: SharedFlow<ReconnectEvent> = _reconnectEvents.asSharedFlow()
 
     init {
         // shortcut: one collector for the process lifetime since WitnessApp creates this class
@@ -107,7 +107,7 @@ class ImuAutoConnector(
      * a caller on a timer must not cut short) is returned instead of a new one. Null when there
      * is nothing to attempt.
      */
-    fun tryAutoConnect(onlyIfSingle: Boolean = false): Job? {
+    public fun tryAutoConnect(onlyIfSingle: Boolean = false): Job? {
         if (sensorManager.isConnected() || sensorManager.isConnecting()) return null
         if (store.getAll().isEmpty()) return null
         autoConnectJob?.takeIf { it.isActive }?.let { return it }
@@ -125,7 +125,7 @@ class ImuAutoConnector(
      * unprompted disconnect. Safe to call redundantly: idempotent-guarded by
      * [attemptConnect] and cancels any in-flight attempt of its own first.
      */
-    fun retryAfterUnexpectedDisconnect() {
+    public fun retryAfterUnexpectedDisconnect() {
         if (sensorManager.isConnected()) return
         if (store.getAll().isEmpty()) return
 
@@ -147,7 +147,7 @@ class ImuAutoConnector(
         }
     }
 
-    fun cancel() {
+    public fun cancel() {
         autoConnectJob?.cancel()
         autoConnectJob = null
         sensorManager.onDeviceDiscovered = null

@@ -15,7 +15,7 @@ import kotlin.math.abs
  * sensor packs several 55 61 frames into one (2 at 50 Hz, 4 at 100 Hz).
  * This parser extracts all valid packets and returns typed ImuSample fields.
  */
-object ImuDataParser {
+internal object ImuDataParser {
 
     const val PACKET_SIZE = 11
     const val COMBINED_PACKET_SIZE = 20

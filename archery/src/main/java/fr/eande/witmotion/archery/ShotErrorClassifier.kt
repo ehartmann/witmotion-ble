@@ -10,12 +10,12 @@ import kotlin.math.sqrt
  * Inspired by Mantis X8's error classification system. Each error type
  * is detected by analyzing specific movement patterns during the shot phases.
  */
-object ShotErrorClassifier {
+public object ShotErrorClassifier {
 
     /**
      * Known archery shooting errors and their descriptions.
      */
-    enum class ShotError(val label: String, val description: String) {
+    public enum class ShotError(public val label: String, public val description: String) {
         ANTICIPATION("Anticipation", "Movement before the release — archer expects the shot and tenses up"),
         FLINCH("Flinch", "Sudden jerky movement at release — common in beginners"),
         BREAKING_WRIST("Breaking wrist", "Wrist rotation during or after release — grip too tight"),
@@ -24,7 +24,7 @@ object ShotErrorClassifier {
         CLEAN("Clean shot", "Good execution with minimal parasitic movement")
     }
 
-    data class ClassificationResult(
+    public data class ClassificationResult(
         val primaryError: ShotError,
         val confidence: Float,      // 0-1
         val secondaryError: ShotError? = null,
@@ -34,7 +34,7 @@ object ShotErrorClassifier {
     /**
      * Classify a shot from IMU samples and detected phases.
      */
-    fun classify(
+    public fun classify(
         samples: List<ImuSample>,
         phases: List<BowMovementAnalyzer.PhaseSegment>
     ): ClassificationResult {

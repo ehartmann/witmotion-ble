@@ -15,17 +15,17 @@ import kotlin.math.abs
  * and the current position as a dot. The scale adapts to the movement, never below
  * [MIN_RANGE_DEGREES] so a steady hold is not magnified into noise.
  */
-class LiveAimView @JvmOverloads constructor(
+public class LiveAimView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    companion object {
-        const val MIN_RANGE_DEGREES = 0.5f
+    public companion object {
+        public const val MIN_RANGE_DEGREES: Float = 0.5f
     }
 
-    var windowMs: Long = LiveAim.DEFAULT_WINDOW_MS
+    public var windowMs: Long = LiveAim.DEFAULT_WINDOW_MS
 
     internal var trail: List<LiveAim.Point> = emptyList()
         private set
@@ -37,7 +37,7 @@ class LiveAimView @JvmOverloads constructor(
     private val dotPaint = Paint().apply { color = Color.rgb(244, 67, 54); style = Paint.Style.FILL; isAntiAlias = true }
     private val labelPaint = Paint().apply { color = Color.argb(160, 255, 255, 255); textSize = 22f; isAntiAlias = true }
 
-    fun setSamples(samples: List<ImuSample>) {
+    public fun setSamples(samples: List<ImuSample>) {
         trail = LiveAim.trail(samples, windowMs)
         invalidate()
     }

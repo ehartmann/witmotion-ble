@@ -23,13 +23,13 @@ import android.view.animation.LinearInterpolator
  *   Red   = RELEASE
  *   Green = FOLLOW-THROUGH
  */
-class ShotTraceView @JvmOverloads constructor(
+public class ShotTraceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    data class TracePoint(
+    public data class TracePoint(
         val yaw: Float,      // horizontal movement (°)
         val pitch: Float,    // vertical movement (°)
         val phase: ShotPhase
@@ -61,7 +61,7 @@ class ShotTraceView @JvmOverloads constructor(
         setOnClickListener { startReplay() }
     }
 
-    fun setTrace(points: List<TracePoint>, metrics: BowMovementMetrics? = null) {
+    public fun setTrace(points: List<TracePoint>, metrics: BowMovementMetrics? = null) {
         this.tracePoints = points
         this.metrics = metrics
         this.visiblePointCount = points.size
@@ -71,7 +71,7 @@ class ShotTraceView @JvmOverloads constructor(
     /**
      * Replay the trace with animation: points appear one by one over [durationMs].
      */
-    fun startReplay(durationMs: Long = 3000L) {
+    public fun startReplay(durationMs: Long = 3000L) {
         animator?.cancel()
         if (tracePoints.isEmpty()) return
 
@@ -86,7 +86,7 @@ class ShotTraceView @JvmOverloads constructor(
         }
     }
 
-    fun stopReplay() {
+    public fun stopReplay() {
         animator?.cancel()
         visiblePointCount = tracePoints.size
         invalidate()
@@ -165,11 +165,11 @@ class ShotTraceView @JvmOverloads constructor(
         }
     }
 
-    companion object {
+    public companion object {
         /**
          * Convert ImuSamples + phase segments into TracePoints for this view.
          */
-        fun samplesToTrace(
+        public fun samplesToTrace(
             samples: List<ImuSample>,
             phases: List<BowMovementAnalyzer.PhaseSegment>
         ): List<TracePoint> {

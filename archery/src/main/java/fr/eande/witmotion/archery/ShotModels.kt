@@ -3,7 +3,7 @@ package fr.eande.witmotion.archery
 /**
  * Phases of an archery shot cycle, detected from IMU data.
  */
-enum class ShotPhase {
+public enum class ShotPhase {
     IDLE,
     DRAW,
     HOLD,
@@ -14,7 +14,7 @@ enum class ShotPhase {
 /**
  * Metrics computed for a single shot from IMU data.
  */
-data class BowMovementMetrics(
+public data class BowMovementMetrics(
     val holdScore: Float,          // 0-100, stability during hold
     val releaseScore: Float,       // 0-100, quality of release
     val followThroughScore: Float, // 0-100, post-shot form

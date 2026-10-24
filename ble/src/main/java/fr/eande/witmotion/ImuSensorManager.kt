@@ -43,20 +43,20 @@ import java.util.concurrent.CopyOnWriteArrayList
  * - Deliver parsed ImuSample to listeners
  */
 @SuppressLint("MissingPermission") // Permissions checked by caller
-class ImuSensorManager(private val context: Context) {
+public class ImuSensorManager(private val context: Context) {
 
-    companion object {
+    public companion object {
         /** One filter per valid address; the others are dropped. */
-        fun scanFilters(addresses: Collection<String>): List<ScanFilter> =
+        public fun scanFilters(addresses: Collection<String>): List<ScanFilter> =
             addresses.filter(BluetoothAdapter::checkBluetoothAddress).map { ScanFilter.Builder().setDeviceAddress(it).build() }
 
         private const val TAG = "ImuSensorManager"
         private const val DEVICE_NAME_PREFIX = "WT"
 
-        val SERVICE_UUID: UUID = UUID.fromString("0000FFE5-0000-1000-8000-00805F9A34FB")
-        val NOTIFY_CHAR_UUID: UUID = UUID.fromString("0000FFE4-0000-1000-8000-00805F9A34FB")
-        val WRITE_CHAR_UUID: UUID = UUID.fromString("0000FFE9-0000-1000-8000-00805F9A34FB")
-        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        public val SERVICE_UUID: UUID = UUID.fromString("0000FFE5-0000-1000-8000-00805F9A34FB")
+        public val NOTIFY_CHAR_UUID: UUID = UUID.fromString("0000FFE4-0000-1000-8000-00805F9A34FB")
+        public val WRITE_CHAR_UUID: UUID = UUID.fromString("0000FFE9-0000-1000-8000-00805F9A34FB")
+        public val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         private const val SCAN_TIMEOUT_MS = 10_000L
         private const val BATTERY_REFRESH_MS = 60_000L
@@ -67,18 +67,18 @@ class ImuSensorManager(private val context: Context) {
 
         // WitMotion device-config commands: [0xFF] [0xAA] [RegAddr] [DataL] [DataH].
         // 0x69/0xB588 unlocks config writes; the output rate commands are in OutputRate.
-        val UNLOCK = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x69, 0x88.toByte(), 0xB5.toByte())
-        val SAVE_CONFIG = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x00, 0x00)
+        public val UNLOCK: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x69, 0x88.toByte(), 0xB5.toByte())
+        public val SAVE_CONFIG: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x00, 0x00)
         // Register read (no unlock needed): the sensor answers with a 55 71 notification
-        val READ_BATTERY = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, ImuDataParser.REG_BATTERY_VOLTAGE.toByte(), 0x00)
+        public val READ_BATTERY: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, ImuDataParser.REG_BATTERY_VOLTAGE.toByte(), 0x00)
         private const val REG_OUTPUT_RATE = 0x03
-        val READ_RATE = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_OUTPUT_RATE.toByte(), 0x00)
+        public val READ_RATE: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_OUTPUT_RATE.toByte(), 0x00)
         private const val REG_INSTALLATION = 0x23
-        val READ_INSTALLATION = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_INSTALLATION.toByte(), 0x00)
+        public val READ_INSTALLATION: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_INSTALLATION.toByte(), 0x00)
         private const val REG_BANDWIDTH = 0x1F
-        val READ_BANDWIDTH = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_BANDWIDTH.toByte(), 0x00)
+        public val READ_BANDWIDTH: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_BANDWIDTH.toByte(), 0x00)
         private const val REG_ALGORITHM = 0x24
-        val READ_ALGORITHM = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_ALGORITHM.toByte(), 0x00)
+        public val READ_ALGORITHM: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_ALGORITHM.toByte(), 0x00)
 
         /** The commands sent after the unlock on every connect: the angles first, so a sensor left on timestamps stops at once. */
         internal fun settingsCommands(rate: OutputRate, installation: Installation, algorithm: Algorithm, bandwidth: Bandwidth) = listOf(
@@ -89,22 +89,22 @@ class ImuSensorManager(private val context: Context) {
 
     // State
     private val _discoveredDevices = MutableStateFlow<List<ImuSensorDevice>>(emptyList())
-    val discoveredDevices: StateFlow<List<ImuSensorDevice>> = _discoveredDevices.asStateFlow()
+    public val discoveredDevices: StateFlow<List<ImuSensorDevice>> = _discoveredDevices.asStateFlow()
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
-    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+    public val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     private val _connectedDevice = MutableStateFlow<ImuSensorDevice?>(null)
-    val connectedDevice: StateFlow<ImuSensorDevice?> = _connectedDevice.asStateFlow()
+    public val connectedDevice: StateFlow<ImuSensorDevice?> = _connectedDevice.asStateFlow()
 
     private val _batteryLevel = MutableStateFlow(-1) // -1 = unknown
-    val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
+    public val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
 
     /**
      * Since the last connect: which frame format arrives, how much of the stream is not usable,
      * and the link and rate settings actually in effect (null until reported).
      */
-    data class LinkStats(
+    public data class LinkStats(
         val notifications: Long = 0,
         val combinedFrames: Long = 0,
         val legacyFrames: Long = 0,
@@ -124,11 +124,11 @@ class ImuSensorManager(private val context: Context) {
     )
 
     private val _linkStats = MutableStateFlow(LinkStats())
-    val linkStats: StateFlow<LinkStats> = _linkStats.asStateFlow()
+    public val linkStats: StateFlow<LinkStats> = _linkStats.asStateFlow()
 
     private val _lastSample = MutableStateFlow<ImuSample?>(null)
     /** Most recent parsed IMU sample. Observe for live display. */
-    val lastSample: StateFlow<ImuSample?> = _lastSample.asStateFlow()
+    public val lastSample: StateFlow<ImuSample?> = _lastSample.asStateFlow()
 
     private val _unexpectedDisconnects = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     /**
@@ -137,7 +137,7 @@ class ImuSensorManager(private val context: Context) {
      * so more than one collector (ImuAutoConnector today, potentially others later) can react
      * without overwriting each other, unlike a single nullable lambda.
      */
-    val unexpectedDisconnects: SharedFlow<Unit> = _unexpectedDisconnects.asSharedFlow()
+    public val unexpectedDisconnects: SharedFlow<Unit> = _unexpectedDisconnects.asSharedFlow()
 
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var writeCharacteristic: BluetoothGattCharacteristic? = null
@@ -177,25 +177,25 @@ class ImuSensorManager(private val context: Context) {
 
     /** Registers a listener for parsed samples. Call [removeSampleListener] with the same
      *  instance to stop receiving them. */
-    fun addSampleListener(listener: (ImuSample) -> Unit) {
+    public fun addSampleListener(listener: (ImuSample) -> Unit) {
         sampleListeners.add(listener)
     }
 
-    fun removeSampleListener(listener: (ImuSample) -> Unit) {
+    public fun removeSampleListener(listener: (ImuSample) -> Unit) {
         sampleListeners.remove(listener)
     }
 
     /** Called when a device is discovered during scan. Used by ImuAutoConnector. */
-    var onDeviceDiscovered: ((ImuSensorDevice) -> Unit)? = null
+    internal var onDeviceDiscovered: ((ImuSensorDevice) -> Unit)? = null
 
-    enum class ConnectionState {
+    public enum class ConnectionState {
         DISCONNECTED, CONNECTING, CONNECTED, SCANNING
     }
 
     // --- Scanning ---
 
     /** Scans for every WitMotion sensor, or only for [addresses]: Android pauses an unfiltered scan while the screen is off. */
-    fun startScan(addresses: Collection<String>? = null) {
+    public fun startScan(addresses: Collection<String>? = null) {
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bluetoothManager?.adapter ?: run {
             Log.e(TAG, "Bluetooth not available")
@@ -234,7 +234,7 @@ class ImuSensorManager(private val context: Context) {
         mainHandler.postDelayed(scanTimeoutRunnable, SCAN_TIMEOUT_MS)
     }
 
-    fun stopScan() {
+    public fun stopScan() {
         if (!isScanning) return
         isScanning = false
 
@@ -284,7 +284,7 @@ class ImuSensorManager(private val context: Context) {
 
     // --- Connection ---
 
-    fun connect(device: ImuSensorDevice) {
+    public fun connect(device: ImuSensorDevice) {
         stopScan()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.CONNECTING
@@ -341,11 +341,11 @@ class ImuSensorManager(private val context: Context) {
      * Connect directly to a device by BLE address, without prior scan.
      * Used for auto-reconnecting to registered devices.
      */
-    fun connectByAddress(address: String, name: String = "WT9011DCL") {
+    public fun connectByAddress(address: String, name: String = "WT9011DCL") {
         connect(ImuSensorDevice(address = address, name = name))
     }
 
-    fun disconnect() {
+    public fun disconnect() {
         userInitiatedDisconnect = true
         gatt?.disconnect()
         gatt?.close()
@@ -577,7 +577,7 @@ class ImuSensorManager(private val context: Context) {
      * Queues WitMotion `FF AA reg L H` commands, preceded by the config unlock. Writes run one
      * at a time; a command sent while disconnected is dropped.
      */
-    fun sendCommands(vararg commands: ByteArray) = enqueuePaced(listOf(UNLOCK) + commands)
+    public fun sendCommands(vararg commands: ByteArray): Unit = enqueuePaced(listOf(UNLOCK) + commands)
 
     /** Writes [commands] one at a time, [COMMAND_SPACING_MS] apart. */
     private fun enqueuePaced(commands: List<ByteArray>) {
@@ -598,7 +598,7 @@ class ImuSensorManager(private val context: Context) {
 
     /** Output rate set on every connect, and at once when changed while connected. Not saved to the sensor's flash. */
     @Volatile
-    var outputRate: OutputRate = OutputRate.HZ_50
+    public var outputRate: OutputRate = OutputRate.HZ_50
         set(value) {
             field = value
             rateRewritten = false
@@ -606,7 +606,7 @@ class ImuSensorManager(private val context: Context) {
         }
 
     /** Sets [outputRate], then reads register 0x03 back into [linkStats]. */
-    fun configureRate() = sendCommands(outputRate.command, READ_RATE)
+    public fun configureRate(): Unit = sendCommands(outputRate.command, READ_RATE)
 
     /**
      * How the sensor is mounted, written on every connect and at once when changed while
@@ -614,28 +614,28 @@ class ImuSensorManager(private val context: Context) {
      * unwritten would make the angles depend on that. Not saved to the sensor's flash.
      */
     @Volatile
-    var installation: Installation = Installation.HORIZONTAL
+    public var installation: Installation = Installation.HORIZONTAL
         set(value) {
             field = value
             if (isConnected()) configureInstallation()
         }
 
     /** Sets [installation], then reads register 0x23 back into [linkStats]. */
-    fun configureInstallation() = sendCommands(installation.command, READ_INSTALLATION)
+    public fun configureInstallation(): Unit = sendCommands(installation.command, READ_INSTALLATION)
 
     /**
      * 6 or 9-axis heading, written on every connect and at once when changed while connected,
      * like [installation]. Not saved to the sensor's flash.
      */
     @Volatile
-    var algorithm: Algorithm = Algorithm.AXIS_9
+    public var algorithm: Algorithm = Algorithm.AXIS_9
         set(value) {
             field = value
             if (isConnected()) configureAlgorithm()
         }
 
     /** Sets [algorithm], then reads register 0x24 back into [linkStats]. */
-    fun configureAlgorithm() = sendCommands(algorithm.command, READ_ALGORITHM)
+    public fun configureAlgorithm(): Unit = sendCommands(algorithm.command, READ_ALGORITHM)
 
     /**
      * Cut-off of the sensor's accelerometer and gyroscope filter, written on every connect and
@@ -643,14 +643,14 @@ class ImuSensorManager(private val context: Context) {
      * default is 20 Hz, which delays and smooths a 20 ms event: see [Bandwidth.suggestedFor].
      */
     @Volatile
-    var bandwidth: Bandwidth = Bandwidth.HZ_20
+    public var bandwidth: Bandwidth = Bandwidth.HZ_20
         set(value) {
             field = value
             if (isConnected()) configureBandwidth()
         }
 
     /** Sets [bandwidth], then reads register 0x1F back into [linkStats]. */
-    fun configureBandwidth() = sendCommands(bandwidth.command, READ_BANDWIDTH)
+    public fun configureBandwidth(): Unit = sendCommands(bandwidth.command, READ_BANDWIDTH)
 
     /**
      * On connect: [outputRate], [installation], [algorithm] and [bandwidth] under one unlock, all
@@ -674,7 +674,7 @@ class ImuSensorManager(private val context: Context) {
      * sensor, and one check at a time. A disconnect or a new connect ends the check at once with
      * [ClockCheckResult.aborted] set; the sensor gets the angles back on the next connect.
      */
-    suspend fun runClockCheck(durationMs: Long = 30_000): ClockCheckResult {
+    public suspend fun runClockCheck(durationMs: Long = 30_000): ClockCheckResult {
         check(isConnected()) { "Not connected" }
         val collector = clockChecks.begin()
         timestampSizeLogged = false
@@ -689,7 +689,7 @@ class ImuSensorManager(private val context: Context) {
      * Makes [ImuSample.timestamp] relative to now; until called, timestamps are
      * [SystemClock.elapsedRealtime] values (ms since boot).
      */
-    fun resetRecordingTimestamp() {
+    public fun resetRecordingTimestamp() {
         recordingStartTime = SystemClock.elapsedRealtime()
         lastSampleTimestamp = Long.MIN_VALUE
     }
@@ -711,7 +711,7 @@ class ImuSensorManager(private val context: Context) {
         }
     }
 
-    fun isConnected(): Boolean = _connectionState.value == ConnectionState.CONNECTED
+    public fun isConnected(): Boolean = _connectionState.value == ConnectionState.CONNECTED
 
-    fun isConnecting(): Boolean = _connectionState.value == ConnectionState.CONNECTING
+    public fun isConnecting(): Boolean = _connectionState.value == ConnectionState.CONNECTING
 }
