@@ -163,7 +163,7 @@ public class BowMovementAnalyzer(
             var msAbove = 0L
             for (i in releaseSegment.startIndex..minOf(releaseSegment.endIndex, samples.lastIndex)) {
                 if (i > 0 && accelJump(samples, i) > releaseAccelThreshold * 0.5f) {
-                    msAbove += samples[i].timestamp - samples[i - 1].timestamp
+                    msAbove += minOf(samples[i].timestamp - samples[i - 1].timestamp, jumpWindowMs)
                 }
             }
             (100f - msAbove * 0.5f).coerceIn(0f, 100f)

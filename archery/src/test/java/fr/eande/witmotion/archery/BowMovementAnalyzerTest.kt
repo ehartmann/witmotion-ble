@@ -291,4 +291,25 @@ class BowMovementAnalyzerTest {
 
         assertThat(scores.max() - scores.min()).isAtMost(15f)
     }
+
+    @Test
+    fun `a link gap just before the release start does not zero the release score`() {
+        fun score(gapMs: Long): Float {
+            val samples = mutableListOf<ImuSample>()
+            var t = 0L
+            while (t < 300) { samples += sample(t, gyro = floatArrayOf(25f, 0f, 0f)); t += 10 }
+            while (t < 700) { samples += sample(t, gyro = floatArrayOf(1f, 0f, 0f)); t += 10 }
+            val start = t + gapMs - 10
+            t = start + 10
+            while (t < start + 400) {
+                val dt = (t - start).toFloat()
+                val z = if (dt <= 20f) 1f + 8f * dt / 20f else if (dt <= 60f) 9f else if (dt <= 80f) 9f - 8f * (dt - 60f) / 20f else 1f
+                samples += sample(t, gyro = floatArrayOf(1f, 0f, 0f), accel = floatArrayOf(0f, 0f, z))
+                t += 10
+            }
+            return analyzer.computeMetrics(samples, analyzer.detectPhases(samples))!!.releaseScore
+        }
+
+        assertThat(score(gapMs = 200)).isAtLeast(score(gapMs = 0) - 20f)
+    }
 }
