@@ -1,6 +1,16 @@
 package fr.eande.witmotion
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.content.Context
 import com.google.common.truth.Truth.assertThat
+import io.mockk.Runs
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockk
+import io.mockk.slot
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -105,5 +115,46 @@ class ImuSensorManagerPipelineTest {
 
         h.notify(GattHarness.registerReply(0x03, h.manager.outputRate.code))
         assertThat(h.manager.linkStats.value.rateMismatch).isFalse()
+    }
+
+    private val scanner = mockk<BluetoothLeScanner>(relaxed = true)
+    private val scanCallback = slot<ScanCallback>()
+
+    private fun scanningHarness(): GattHarness {
+        val adapter = mockk<BluetoothAdapter> {
+            every { isEnabled } returns true
+            every { bluetoothLeScanner } returns scanner
+        }
+        val bluetooth = mockk<BluetoothManager> { every { this@mockk.adapter } returns adapter }
+        val context = mockk<Context> { every { getSystemService(Context.BLUETOOTH_SERVICE) } returns bluetooth }
+        every { scanner.startScan(any(), any(), capture(scanCallback)) } just Runs
+        return GattHarness(ImuSensorManager(context))
+    }
+
+    @Test
+    fun `a scan leaves a live connection's state alone`() {
+        val h = scanningHarness()
+        h.connect()
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+
+        h.manager.startScan()
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+        h.manager.stopScan()
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+
+        h.manager.startScan()
+        scanCallback.captured.onScanFailed(ScanCallback.SCAN_FAILED_INTERNAL_ERROR)
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
+    }
+
+    @Test
+    fun `a scan from the disconnected state still reports scanning, then disconnected`() {
+        val manager = scanningHarness().manager
+
+        manager.startScan()
+        assertThat(manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.SCANNING)
+
+        manager.stopScan()
+        assertThat(manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
     }
 }

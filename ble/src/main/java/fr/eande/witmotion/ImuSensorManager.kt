@@ -198,7 +198,7 @@ class ImuSensorManager(private val context: Context) {
 
         if (isScanning) return
         isScanning = true
-        _connectionState.value = ConnectionState.SCANNING
+        setScanState(ConnectionState.SCANNING)
         _discoveredDevices.value = emptyList()
 
         val settings = ScanSettings.Builder()
@@ -210,7 +210,7 @@ class ImuSensorManager(private val context: Context) {
         } catch (e: SecurityException) {
             Log.e(TAG, "BLE scan denied (missing runtime permission?)", e)
             isScanning = false
-            _connectionState.value = ConnectionState.DISCONNECTED
+            setScanState(ConnectionState.DISCONNECTED)
             return
         }
         Log.d(TAG, "BLE scan started")
@@ -237,6 +237,11 @@ class ImuSensorManager(private val context: Context) {
         Log.d(TAG, "BLE scan stopped")
     }
 
+    /** The scan shares the enum with the link: it may only move the state while no link is up or coming up. */
+    private fun setScanState(state: ConnectionState) {
+        _connectionState.update { if (it == ConnectionState.DISCONNECTED || it == ConnectionState.SCANNING) state else it }
+    }
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
@@ -259,7 +264,7 @@ class ImuSensorManager(private val context: Context) {
         override fun onScanFailed(errorCode: Int) {
             Log.e(TAG, "Scan failed: $errorCode")
             isScanning = false
-            _connectionState.value = ConnectionState.DISCONNECTED
+            setScanState(ConnectionState.DISCONNECTED)
         }
     }
 
