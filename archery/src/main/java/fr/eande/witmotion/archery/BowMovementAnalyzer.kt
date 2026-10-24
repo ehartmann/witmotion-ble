@@ -153,7 +153,7 @@ public class BowMovementAnalyzer(
         } else 0L
 
         // Cant angle (mean roll during hold)
-        val cantAngle = holdSamples.mapNotNull { it.euler?.get(0) }.average().toFloat()
+        val cantAngle = circularMean(holdSamples.mapNotNull { it.euler?.get(0) })
             .let { if (it.isNaN()) 0f else it }
 
         // Release metrics

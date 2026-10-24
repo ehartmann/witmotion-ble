@@ -1,6 +1,9 @@
 package fr.eande.witmotion.archery
 
 import fr.eande.witmotion.ImuSample
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 
 /** Live aiming trace: where the bow pointed during the last few seconds, relative to the mean aim. */
 public object LiveAim {
@@ -31,3 +34,10 @@ public object LiveAim {
 
 /** [degrees] brought into [-180, 180): the shortest signed angle. */
 internal fun wrapDegrees(degrees: Float): Float = ((degrees + 540f) % 360f) - 180f
+
+/** Mean of angles in degrees across the +/-180 wrap: +179 and -179 give 180, not 0. NaN when [degrees] is empty. */
+internal fun circularMean(degrees: List<Float>): Float {
+    if (degrees.isEmpty()) return Float.NaN
+    val radians = degrees.map { Math.toRadians(it.toDouble()) }
+    return Math.toDegrees(atan2(radians.sumOf { sin(it) }, radians.sumOf { cos(it) })).toFloat()
+}

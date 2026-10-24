@@ -136,12 +136,12 @@ public object ShotErrorClassifier {
     private fun checkBreakingWrist(holdSamples: List<ImuSample>, releaseSamples: List<ImuSample>?): Float {
         if (releaseSamples == null) return 0f
 
-        val holdRoll = holdSamples.mapNotNull { it.euler?.get(0) }.average().toFloat()
-        val releaseRoll = releaseSamples.mapNotNull { it.euler?.get(0) }.average().toFloat()
+        val holdRoll = circularMean(holdSamples.mapNotNull { it.euler?.get(0) })
+        val releaseRoll = circularMean(releaseSamples.mapNotNull { it.euler?.get(0) })
 
         if (holdRoll.isNaN() || releaseRoll.isNaN()) return 0f
 
-        val rollChange = abs(releaseRoll - holdRoll)
+        val rollChange = abs(wrapDegrees(releaseRoll - holdRoll))
         return ((rollChange - 3f) / 7f).coerceIn(0f, 1f)
     }
 
