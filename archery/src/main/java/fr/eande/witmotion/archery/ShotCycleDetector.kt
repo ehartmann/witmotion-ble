@@ -17,9 +17,13 @@ import fr.eande.witmotion.ImuSample
  * which bounds memory and the phase-detection cost over a long session; a draw that reaches no
  * release within [maxDrawMs] is dropped (stuck draw, bow handled without shooting).
  *
+ * `onPhase` reports the [LivePhase] once, when it changes: a HOLD once the bow stayed calm for the
+ * analyzer's `minHoldMs` (DRAW until then), and IDLE after a reset (a shot emitted, [flush], timestamps
+ * restarting) or a link gap (over 1 s without samples). A HOLD begun before such a gap is never reported.
+ *
  * Thread safety: [onSample] and [flush] are synchronized to allow safe calls from
- * BLE callback and main threads respectively. `onShotDetected` is called on the thread that
- * completed the shot (the BLE thread for [onSample]), after the lock is released: a slow
+ * BLE callback and main threads respectively. `onPhase`, then `onShotDetected`, are called on the
+ * thread that made the change (the BLE thread for [onSample]), after the lock is released: a slow
  * consumer delays that thread but may call back into the detector from another thread.
  */
 public class ShotCycleDetector(
@@ -27,6 +31,7 @@ public class ShotCycleDetector(
     private val afterReleaseMs: Long = 3_000,
     private val maxDrawMs: Long = 30_000,
     private val idleKeepMs: Long = 6_000,
+    private val onPhase: (LivePhase) -> Unit = {},
     private val onShotDetected: (DetectedShot) -> Unit
 ) {
     /**
@@ -46,6 +51,9 @@ public class ShotCycleDetector(
     public companion object {
         /** A shot's samples start this long before its raise, or at the oldest sample kept. */
         public const val RAISE_LEAD_MS: Long = 1_000
+
+        /** A longer silence between two samples is a link gap: the live phase restarts from IDLE. */
+        private const val MAX_GAP_MS: Long = 1_000
 
         /**
          * Runs detection over a finished recording, including a shot cut short by its end.
@@ -79,12 +87,42 @@ public class ShotCycleDetector(
     private val buffer = ArrayList<ImuSample>()
     private var shotStartIndex: Int? = null
     private var releaseSeen = false
+    private var livePhase = ShotPhase.IDLE
+    private var liveSince = 0L
+    private var reported = LivePhase(ShotPhase.IDLE, 0L)
+    /** A HOLD begun before this time, the first sample after a link gap, is not live. */
+    private var floorT = Long.MIN_VALUE
 
     /** Samples held right now; for tests of the memory bound. */
     internal val bufferedSamples: Int get() = synchronized(lock) { buffer.size }
 
-    public fun onSample(sample: ImuSample) {
-        synchronized(lock) { process(sample) }?.let(onShotDetected)
+    public fun onSample(sample: ImuSample): Unit = locked { process(sample) }
+
+    /** Runs [step] under the lock, then the callbacks outside it. */
+    private inline fun locked(step: () -> DetectedShot?) {
+        var phase: LivePhase? = null
+        val shot = synchronized(lock) { step().also { phase = phaseChange() } }
+        phase?.let(onPhase)
+        shot?.let(onShotDetected)
+    }
+
+    /** The live phase to report, null when it did not change (a HOLD changes with its start too). */
+    private fun phaseChange(): LivePhase? {
+        if (livePhase == reported.phase && (livePhase != ShotPhase.HOLD || liveSince == reported.sinceTimestamp)) return null
+        return LivePhase(livePhase, liveSince).also { reported = it }
+    }
+
+    private fun updateLivePhase(sample: ImuSample, phases: List<BowMovementAnalyzer.PhaseSegment>, gap: Boolean) {
+        val last = phases.last()
+        val start = buffer[last.startIndex].timestamp
+        livePhase = when {
+            gap -> ShotPhase.IDLE
+            last.phase != ShotPhase.HOLD -> last.phase
+            start < floorT -> ShotPhase.IDLE
+            sample.timestamp - start < analyzer.minHoldMs -> ShotPhase.DRAW
+            else -> ShotPhase.HOLD
+        }
+        liveSince = if (livePhase == ShotPhase.HOLD) start else sample.timestamp
     }
 
     private fun process(sample: ImuSample): DetectedShot? {
@@ -93,6 +131,8 @@ public class ShotCycleDetector(
             if (shotStartIndex != null) observer?.dropped(buffer, buffer.size, stuck = false)
             reset()
         }
+        val gap = buffer.isNotEmpty() && sample.timestamp - buffer.last().timestamp > MAX_GAP_MS
+        if (gap) floorT = sample.timestamp
         buffer.add(sample)
         if (shotStartIndex == null) {
             val keepFrom = buffer.indexOfFirst { sample.timestamp - it.timestamp <= idleKeepMs }
@@ -100,6 +140,7 @@ public class ShotCycleDetector(
         }
 
         val phases = analyzer.detectPhases(buffer)
+        updateLivePhase(sample, phases, gap)
         val start = shotStartIndex
             ?: phases.firstOrNull { it.phase == ShotPhase.DRAW }?.startIndex?.also { shotStartIndex = it }
             ?: return null
@@ -120,9 +161,7 @@ public class ShotCycleDetector(
      * Call when stopping recording: emits the shot in progress if its release was seen, with
      * whatever follow-through was recorded.
      */
-    public fun flush() {
-        synchronized(lock) { finish() }?.let(onShotDetected)
-    }
+    public fun flush(): Unit = locked { finish() }
 
     private fun finish(): DetectedShot? {
         val start = shotStartIndex
@@ -181,6 +220,9 @@ public class ShotCycleDetector(
     }
 
     private fun reset() {
+        livePhase = ShotPhase.IDLE
+        if (buffer.isNotEmpty()) liveSince = buffer.last().timestamp
+        floorT = Long.MIN_VALUE
         buffer.clear()
         shotStartIndex = null
         releaseSeen = false

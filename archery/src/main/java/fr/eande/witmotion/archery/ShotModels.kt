@@ -15,6 +15,12 @@ public enum class ShotPhase {
 }
 
 /**
+ * The phase the bow is in as samples arrive, from [ShotCycleDetector]'s `onPhase`. [sinceTimestamp] is,
+ * for a HOLD, its first calm sample (the origin of `holdTimeMs`), else the sample where the phase was first seen.
+ */
+public data class LivePhase(val phase: ShotPhase, val sinceTimestamp: Long)
+
+/**
  * Sample indices where a shot's phases start, from [BowMovementAnalyzer.shotBoundaries].
  * [raiseStartIndex] is null when no raise is found (the bow was already up), the samples begin during it,
  * or it lasts longer than `raiseMaxMs` (bow handling).
