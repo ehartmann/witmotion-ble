@@ -12,7 +12,15 @@ public data class DetectionReport(
     val weakSpikes: List<Spike>
 )
 
-public data class DetectedWindow(val drawStartMs: Long, val releaseMs: Long, val endMs: Long)
+public data class DetectedWindow(
+    /**
+     * The shot's first sample, as [ShotCycleDetector.detectAll] emits it: [ShotCycleDetector.RAISE_LEAD_MS]
+     * before its raise when one is found, else the start of its last draw.
+     */
+    val drawStartMs: Long,
+    val releaseMs: Long,
+    val endMs: Long
+)
 
 /**
  * A draw that did not become a shot. [holdMs] and [holdMeanGyroDps] describe the longest hold of the

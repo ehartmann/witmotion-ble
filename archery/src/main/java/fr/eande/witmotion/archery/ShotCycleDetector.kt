@@ -30,7 +30,8 @@ public class ShotCycleDetector(
     private val onShotDetected: (DetectedShot) -> Unit
 ) {
     /**
-     * A shot's samples and its metrics, measured from its last draw. The timestamps are where
+     * A shot's samples, from [RAISE_LEAD_MS] before its raise when it has one, else from its last draw,
+     * and its metrics, measured from its last draw. The timestamps are where
      * [BowMovementAnalyzer.shotBoundaries] puts the shot's raise, draw, hold and release, null when not found.
      */
     public data class DetectedShot(

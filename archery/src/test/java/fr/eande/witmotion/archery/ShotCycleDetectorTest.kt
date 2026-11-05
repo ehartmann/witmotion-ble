@@ -114,6 +114,29 @@ class ShotCycleDetectorTest {
     }
 
     @Test
+    fun `a raise less than RAISE_LEAD_MS after the oldest sample starts the shot at that sample`() {
+        val shot = detectRealistic(stretch(0, 500, 0f) { 60.0 } + raiseToShot(500))
+
+        assertThat(shot.raiseStartTimestamp).isEqualTo(500L)
+        assertThat(shot.samples.first().timestamp).isEqualTo(0L)
+    }
+
+    @Test
+    fun `flush emits a shot cut short with its raise and boundaries`() {
+        val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000)
+        (stretch(0, 2_000, 0f) { 60.0 } + raiseToShot(2_000)).filter { it.timestamp <= 11_000 }.forEach(detector::onSample)
+        assertThat(detectedShots).isEmpty()
+
+        detector.flush()
+
+        val shot = detectedShots.single()
+        assertThat(shot.samples.first().timestamp).isEqualTo(1_000L)
+        assertThat(listOf(shot.raiseStartTimestamp, shot.holdStartTimestamp, shot.releaseTimestamp))
+            .containsExactly(2_000L, 7_000L, 10_000L).inOrder()
+        assertThat(shot.drawStartTimestamp).isIn(4_500L..4_600L)
+    }
+
+    @Test
     fun `a shot without a raise starts at its last draw as before`() {
         val detector = detector()
         detector.feed(200, 30f)                            // draw, let down

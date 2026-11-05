@@ -186,7 +186,7 @@ public class BowMovementAnalyzer(
      * Compute per-shot metrics from the detected phases.
      */
     public fun computeMetrics(samples: List<ImuSample>, phases: List<PhaseSegment>): BowMovementMetrics? {
-        val holdSegment = phases.find { it.phase == ShotPhase.HOLD } ?: return null
+        val holdSegment = aimHold(phases) ?: return null
         val releaseSegment = phases.find { it.phase == ShotPhase.RELEASE }
         val ftSegment = phases.find { it.phase == ShotPhase.FOLLOW_THROUGH }
 
@@ -382,4 +382,10 @@ public class BowMovementAnalyzer(
         val variance = values.map { (it - mean) * (it - mean) }.average().toFloat()
         return sqrt(variance)
     }
+}
+
+/** The aim's HOLD: the one right before the first RELEASE, else the first HOLD (a pause after a raise is a HOLD too). */
+internal fun aimHold(phases: List<BowMovementAnalyzer.PhaseSegment>): BowMovementAnalyzer.PhaseSegment? {
+    val r = phases.indexOfFirst { it.phase == ShotPhase.RELEASE }
+    return phases.getOrNull(r - 1)?.takeIf { it.phase == ShotPhase.HOLD } ?: phases.find { it.phase == ShotPhase.HOLD }
 }

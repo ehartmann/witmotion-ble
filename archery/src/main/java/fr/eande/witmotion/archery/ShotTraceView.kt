@@ -177,7 +177,10 @@ public class ShotTraceView @JvmOverloads constructor(
         ): List<TracePoint> {
             // Build a phase lookup: index → ShotPhase
             val phaseMap = IntArray(samples.size) { ShotPhase.IDLE.ordinal }
+            val aim = aimHold(phases)
             for (segment in phases) {
+                // Only the aim's hold is HOLD: a pause after the raise stays IDLE
+                if (segment.phase == ShotPhase.HOLD && segment != aim) continue
                 for (i in segment.startIndex..minOf(segment.endIndex, samples.size - 1)) {
                     phaseMap[i] = segment.phase.ordinal
                 }

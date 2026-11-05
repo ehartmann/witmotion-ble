@@ -35,6 +35,9 @@ class ShotBoundariesTest {
     /** Rest 1 s at 60° from the aim, rise 3 s, draw 2 s, hold 3 s, release. */
     private val blended = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) + drawToRelease(4_000)
 
+    /** Rest 1 s at 60° from the aim, rise 3 s, a still pause 1 s at the aim, then draw 2 s, hold 3 s, release. */
+    private val raisePauseDraw = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) + stretch(4_000, 1_000, gyro = 0f) + drawToRelease(5_000)
+
     private fun List<ImuSample>.indexAt(ms: Long) = indexOfFirst { it.timestamp == ms }
 
     @Test
@@ -50,7 +53,7 @@ class ShotBoundariesTest {
 
     @Test
     fun `a raise, a pause, then a draw`() {
-        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) + stretch(4_000, 1_000, gyro = 0f) + drawToRelease(5_000)
+        val samples = raisePauseDraw
 
         val b = analyzer.shotBoundaries(samples)!!
 
@@ -120,6 +123,31 @@ class ShotBoundariesTest {
             stretch(4_000, 2_000, gyro = 25f) + stretch(6_000, 3_000, gyro = 1f)
 
         assertThat(analyzer.shotBoundaries(samples)).isNull()
+    }
+
+    @Test
+    fun `analyze measures the aim's hold, not the pause after a raise`() {
+        assertThat(analyzer.analyze(raisePauseDraw).metrics!!.holdTimeMs).isEqualTo(2_980L)
+    }
+
+    @Test
+    fun `classify reads the aim's hold, not the pause after a raise`() {
+        // The pause held 10° above the aim: read as the hold, the bow would seem to drop after the release
+        val samples = raisePauseDraw.map { it.copy(euler = floatArrayOf(0f, if (it.timestamp in 4_000L until 5_000L) 10f else 0f, 0f)) }
+        val cut = samples.subList(samples.indexAt(5_000), samples.size)
+
+        val atLastDraw = ShotErrorClassifier.classify(cut, analyzer.detectPhases(cut))
+
+        assertThat(atLastDraw.primaryError).isEqualTo(ShotErrorClassifier.ShotError.CLEAN)
+        assertThat(ShotErrorClassifier.classify(samples, analyzer.detectPhases(samples))).isEqualTo(atLastDraw)
+    }
+
+    @Test
+    fun `the trace labels only the aim's hold as HOLD, not the pause after a raise`() {
+        val trace = ShotTraceView.samplesToTrace(raisePauseDraw, analyzer.detectPhases(raisePauseDraw))
+
+        val held = raisePauseDraw.filterIndexed { i, _ -> trace[i].phase == ShotPhase.HOLD }.map { it.timestamp }
+        assertThat(held).containsExactlyElementsIn((7_000L..9_980L step 20).toList()).inOrder()
     }
 
     @Test
