@@ -147,8 +147,9 @@ public class BowMovementAnalyzer(
      * acceleration over the 100 ms ending at it) and the aim (the gravity over the first second of
      * the hold). A raise starts at least [raiseMinTiltDeg] off the aim, after a rest, and ends within
      * [raiseEndTiltDeg] of it: inside the DRAW segment when the archer raises and draws in one
-     * movement, the draw then starting at the raise end, or before the DRAW, at most
-     * [raisePauseMaxMs] earlier.
+     * movement, or before the DRAW, at most [raisePauseMaxMs] earlier. A DRAW segment that begins
+     * more than [raiseEndTiltDeg] off the aim has its draw start where the tilt comes within it, even
+     * when the raise start is unknown or the movement began under [raiseMinTiltDeg].
      */
     public fun shotBoundaries(samples: List<ImuSample>, phases: List<PhaseSegment> = detectPhases(samples)): ShotBoundaries? {
         val r = phases.indexOfFirst { it.phase == ShotPhase.RELEASE }
@@ -174,7 +175,7 @@ public class BowMovementAnalyzer(
 
         return ShotBoundaries(
             raiseStartIndex = s.takeIf { raised },
-            drawStartIndex = raiseEnd?.takeIf { raised } ?: draw.startIndex,
+            drawStartIndex = raiseEnd ?: draw.startIndex,
             holdStartIndex = hold.startIndex,
             releaseIndex = phases[r].startIndex
         )

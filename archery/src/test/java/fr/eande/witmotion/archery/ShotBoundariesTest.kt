@@ -76,7 +76,40 @@ class ShotBoundariesTest {
     fun `a raise cut by the start of the samples is unknown`() {
         val samples = rise(0, ms = 1_500, fromDeg = 30.0) + drawToRelease(1_500)
 
-        assertThat(analyzer.shotBoundaries(samples)!!.raiseStartIndex).isNull()
+        val b = analyzer.shotBoundaries(samples)!!
+
+        assertThat(b.raiseStartIndex).isNull()
+        // The bow is within 10° of the aim from 1 s; the tilt is smoothed over 100 ms
+        assertThat(samples[b.drawStartIndex].timestamp).isIn(1_000L..1_100L)
+    }
+
+    @Test
+    fun `a pause longer than raisePauseMaxMs before the draw keeps no raise`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) + stretch(4_000, 2_500, gyro = 0f) + drawToRelease(6_500)
+
+        val b = analyzer.shotBoundaries(samples)!!
+
+        assertThat(b.raiseStartIndex).isNull()
+        assertThat(b.drawStartIndex).isEqualTo(samples.indexAt(6_500))
+    }
+
+    @Test
+    fun `a blended movement from under raiseMinTiltDeg is no raise, its draw starts at the aim`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 15.0 } + rise(1_000, fromDeg = 15.0) + drawToRelease(4_000)
+
+        val b = analyzer.shotBoundaries(samples)!!
+
+        assertThat(b.raiseStartIndex).isNull()
+        // Within 10° of the aim from 2 s; the tilt is smoothed over 100 ms
+        assertThat(samples[b.drawStartIndex].timestamp).isIn(2_000L..2_100L)
+    }
+
+    @Test
+    fun `no release gives no boundaries`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) +
+            stretch(4_000, 2_000, gyro = 25f) + stretch(6_000, 3_000, gyro = 1f)
+
+        assertThat(analyzer.shotBoundaries(samples)).isNull()
     }
 
     @Test
