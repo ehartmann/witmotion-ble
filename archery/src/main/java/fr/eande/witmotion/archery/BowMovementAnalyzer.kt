@@ -31,7 +31,7 @@ public class BowMovementAnalyzer(
     internal val releaseWindowMs: Long = 200,
     /** The acceleration jump of a release is measured over this window, whatever the rate (see [accelJump]). */
     internal val jumpWindowMs: Long = 20,
-    /** A raise starts with the gravity at least this far from the aim (°), see [shotBoundaries]. */
+    /** A raise starts from a rest with the gravity at least this far from the aim (°), see [shotBoundaries]. */
     internal val raiseMinTiltDeg: Float = 20f,
     /** A raise ends when the gravity comes within this angle of the aim (°). */
     internal val raiseEndTiltDeg: Float = 10f,
@@ -145,9 +145,10 @@ public class BowMovementAnalyzer(
      * Where the shot of [samples] starts its raise, draw, hold and release; null without a DRAW, a
      * HOLD and then a RELEASE. The tilt of a sample is the angle between its gravity (the mean
      * acceleration over the 100 ms ending at it) and the aim (the gravity over the first second of
-     * the hold). A raise starts at least [raiseMinTiltDeg] off the aim, after a rest, and ends within
-     * [raiseEndTiltDeg] of it: inside the DRAW segment when the archer raises and draws in one
-     * movement, or before the DRAW, at most [raisePauseMaxMs] earlier. A DRAW segment that begins
+     * the hold). A raise starts after a rest at least [raiseMinTiltDeg] off the aim (the rest's last
+     * sample, so a jolt starting the movement does not count), and ends within [raiseEndTiltDeg] of
+     * it: inside the DRAW segment when the archer raises and draws in one movement, or before the
+     * DRAW, at most [raisePauseMaxMs] earlier. A DRAW segment that begins
      * more than [raiseEndTiltDeg] off the aim has its draw start where the tilt comes within it, even
      * when the raise start is unknown or the movement began under [raiseMinTiltDeg].
      */
@@ -171,7 +172,7 @@ public class BowMovementAnalyzer(
         }
         while (s > 0 && moving(s - 1)) s--
         // s == 0: the samples begin during the raise, whose start is unknown
-        val raised = s > 0 && tilt(s) >= raiseMinTiltDeg && (!blended || raiseEnd != null)
+        val raised = s > 0 && tilt(s - 1) >= raiseMinTiltDeg && (!blended || raiseEnd != null)
 
         return ShotBoundaries(
             raiseStartIndex = s.takeIf { raised },

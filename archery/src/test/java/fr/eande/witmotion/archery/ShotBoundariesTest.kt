@@ -105,6 +105,16 @@ class ShotBoundariesTest {
     }
 
     @Test
+    fun `a jolt at the first moving sample after a rest at the aim is no raise`() {
+        // A premature release breaks a short hold at the aim: the jolt tilts that one sample's gravity
+        val samples = stretch(0, 300, gyro = 1f) +
+            ImuSample(300, acceleration = floatArrayOf(5f, 2f, 3f), gyroscope = floatArrayOf(40f, 0f, 0f)) +
+            stretch(320, 1_000, gyro = 30f) + stretch(1_320, 200, gyro = 0f) + drawToRelease(1_520)
+
+        assertThat(analyzer.shotBoundaries(samples)!!.raiseStartIndex).isNull()
+    }
+
+    @Test
     fun `no release gives no boundaries`() {
         val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) +
             stretch(4_000, 2_000, gyro = 25f) + stretch(6_000, 3_000, gyro = 1f)
