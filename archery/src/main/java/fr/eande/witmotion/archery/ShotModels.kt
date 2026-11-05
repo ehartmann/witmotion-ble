@@ -8,8 +8,22 @@ public enum class ShotPhase {
     DRAW,
     HOLD,
     RELEASE,
-    FOLLOW_THROUGH
+    FOLLOW_THROUGH,
+
+    /** The bow rising from its rest to the aim. [BowMovementAnalyzer.detectPhases] never emits it: see [ShotBoundaries]. */
+    RAISE
 }
+
+/**
+ * Sample indices where a shot's phases start, from [BowMovementAnalyzer.shotBoundaries].
+ * [raiseStartIndex] is null when no raise is found (the bow was already up) or the samples begin during it.
+ */
+public data class ShotBoundaries(
+    val raiseStartIndex: Int?,
+    val drawStartIndex: Int,
+    val holdStartIndex: Int,
+    val releaseIndex: Int
+)
 
 /**
  * Metrics computed for a single shot from IMU data.

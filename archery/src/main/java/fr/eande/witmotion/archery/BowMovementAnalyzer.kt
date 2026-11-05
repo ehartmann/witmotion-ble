@@ -1,6 +1,8 @@
 package fr.eande.witmotion.archery
 
 import fr.eande.witmotion.ImuSample
+import kotlin.math.PI
+import kotlin.math.acos
 import kotlin.math.sqrt
 
 /**
@@ -28,7 +30,13 @@ public class BowMovementAnalyzer(
     // (seen on the WT9011DCL at ~25 Hz): look this far ahead for the spike before calling it a draw
     internal val releaseWindowMs: Long = 200,
     /** The acceleration jump of a release is measured over this window, whatever the rate (see [accelJump]). */
-    internal val jumpWindowMs: Long = 20
+    internal val jumpWindowMs: Long = 20,
+    /** A raise starts with the gravity at least this far from the aim (°), see [shotBoundaries]. */
+    internal val raiseMinTiltDeg: Float = 20f,
+    /** A raise ends when the gravity comes within this angle of the aim (°). */
+    internal val raiseEndTiltDeg: Float = 10f,
+    /** Longest pause between a raise and the draw that still keeps the raise. */
+    internal val raisePauseMaxMs: Long = 2_000
 ) {
 
     public data class ShotAnalysis(
@@ -71,7 +79,7 @@ public class BowMovementAnalyzer(
             val newPhase: ShotPhase
 
             when (currentPhase) {
-                ShotPhase.IDLE -> {
+                ShotPhase.IDLE, ShotPhase.RAISE -> {
                     newPhase = if (gyroMag > drawThreshold) ShotPhase.DRAW else ShotPhase.IDLE
                 }
                 ShotPhase.DRAW -> {
@@ -131,6 +139,45 @@ public class BowMovementAnalyzer(
         }
 
         return segments
+    }
+
+    /**
+     * Where the shot of [samples] starts its raise, draw, hold and release; null without a DRAW, a
+     * HOLD and then a RELEASE. The tilt of a sample is the angle between its gravity (the mean
+     * acceleration over the 100 ms ending at it) and the aim (the gravity over the first second of
+     * the hold). A raise starts at least [raiseMinTiltDeg] off the aim, after a rest, and ends within
+     * [raiseEndTiltDeg] of it: inside the DRAW segment when the archer raises and draws in one
+     * movement, the draw then starting at the raise end, or before the DRAW, at most
+     * [raisePauseMaxMs] earlier.
+     */
+    public fun shotBoundaries(samples: List<ImuSample>, phases: List<PhaseSegment> = detectPhases(samples)): ShotBoundaries? {
+        val r = phases.indexOfFirst { it.phase == ShotPhase.RELEASE }
+        val hold = phases.getOrNull(r - 1)?.takeIf { it.phase == ShotPhase.HOLD } ?: return null
+        val draw = phases.getOrNull(r - 2)?.takeIf { it.phase == ShotPhase.DRAW } ?: return null
+
+        val holdStartMs = samples[hold.startIndex].timestamp
+        val aim = accelSum(samples, (hold.startIndex..hold.endIndex).takeWhile { samples[it].timestamp - holdStartMs < 1_000 }, unit = true)
+        fun tilt(i: Int) =
+            angleDeg(accelSum(samples, (i downTo 0).takeWhile { samples[i].timestamp - samples[it].timestamp < 100 }, unit = false), aim)
+        fun moving(i: Int) = gyroMagnitude(samples[i]) >= holdThreshold
+
+        val blended = tilt(draw.startIndex) > raiseEndTiltDeg
+        val raiseEnd = if (blended) (draw.startIndex until hold.startIndex).firstOrNull { tilt(it) <= raiseEndTiltDeg } else null
+        var s = draw.startIndex
+        if (!blended) {
+            val drawStartMs = samples[s].timestamp
+            while (s > 0 && !moving(s - 1) && drawStartMs - samples[s - 1].timestamp <= raisePauseMaxMs) s--
+        }
+        while (s > 0 && moving(s - 1)) s--
+        // s == 0: the samples begin during the raise, whose start is unknown
+        val raised = s > 0 && tilt(s) >= raiseMinTiltDeg && (!blended || raiseEnd != null)
+
+        return ShotBoundaries(
+            raiseStartIndex = s.takeIf { raised },
+            drawStartIndex = raiseEnd?.takeIf { raised } ?: draw.startIndex,
+            holdStartIndex = hold.startIndex,
+            releaseIndex = phases[r].startIndex
+        )
     }
 
     /**
@@ -250,6 +297,26 @@ public class BowMovementAnalyzer(
         val dz = a[2] - p[2]
         return sqrt(dx * dx + dy * dy + dz * dz)
     }
+
+    /** Sum of the accelerations of [indices], each scaled to 1 g when [unit]; samples without one add nothing. */
+    private fun accelSum(samples: List<ImuSample>, indices: List<Int>, unit: Boolean): FloatArray {
+        val sum = FloatArray(3)
+        for (i in indices) {
+            val a = samples[i].acceleration ?: continue
+            val n = if (unit) norm(a) else 1f
+            if (n == 0f) continue
+            for (k in 0..2) sum[k] += a[k] / n
+        }
+        return sum
+    }
+
+    /** Angle between [a] and [b], in degrees; NaN when either is zero. */
+    private fun angleDeg(a: FloatArray, b: FloatArray): Float {
+        val cos = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (norm(a) * norm(b))
+        return acos(cos.coerceIn(-1f, 1f)) * 180f / PI.toFloat()
+    }
+
+    private fun norm(v: FloatArray) = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
 
     private fun stdDev(values: List<Float>): Float {
         if (values.size < 2) return 0f

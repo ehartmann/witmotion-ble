@@ -18,6 +18,7 @@ import android.view.animation.LinearInterpolator
  * bow movement path drawn as colored dots.
  *
  * Colors:
+ *   Purple = RAISE
  *   Gray  = DRAW
  *   Blue  = HOLD (aiming)
  *   Red   = RELEASE
@@ -48,6 +49,7 @@ public class ShotTraceView @JvmOverloads constructor(
 
     private val phaseColors = mapOf(
         ShotPhase.IDLE to Color.DKGRAY,
+        ShotPhase.RAISE to Color.rgb(156, 39, 176),    // Purple
         ShotPhase.DRAW to Color.rgb(158, 158, 158),     // Gray
         ShotPhase.HOLD to Color.rgb(33, 150, 243),      // Blue
         ShotPhase.RELEASE to Color.rgb(244, 67, 54),    // Red
