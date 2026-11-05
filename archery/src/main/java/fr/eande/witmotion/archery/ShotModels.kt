@@ -16,7 +16,8 @@ public enum class ShotPhase {
 
 /**
  * Sample indices where a shot's phases start, from [BowMovementAnalyzer.shotBoundaries].
- * [raiseStartIndex] is null when no raise is found (the bow was already up) or the samples begin during it.
+ * [raiseStartIndex] is null when no raise is found (the bow was already up), the samples begin during it,
+ * or it lasts longer than `raiseMaxMs` (bow handling).
  */
 public data class ShotBoundaries(
     val raiseStartIndex: Int?,

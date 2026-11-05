@@ -36,7 +36,12 @@ public class BowMovementAnalyzer(
     /** A raise ends when the gravity comes within this angle of the aim (°). */
     internal val raiseEndTiltDeg: Float = 10f,
     /** Longest pause between a raise and the draw that still keeps the raise. */
-    internal val raisePauseMaxMs: Long = 2_000
+    internal val raisePauseMaxMs: Long = 2_000,
+    /**
+     * Longest raise, from its start to the aim (or to the pause before the draw); a longer movement is
+     * bow handling, not a raise, and its start is unknown.
+     */
+    internal val raiseMaxMs: Long = 6_000
 ) {
 
     public data class ShotAnalysis(
@@ -148,9 +153,10 @@ public class BowMovementAnalyzer(
      * the hold). A raise starts after a rest at least [raiseMinTiltDeg] off the aim (the rest's last
      * sample, so a jolt starting the movement does not count), and ends within [raiseEndTiltDeg] of
      * it: inside the DRAW segment when the archer raises and draws in one movement, or before the
-     * DRAW, at most [raisePauseMaxMs] earlier. A DRAW segment that begins
-     * more than [raiseEndTiltDeg] off the aim has its draw start where the tilt comes within it, even
-     * when the raise start is unknown or the movement began under [raiseMinTiltDeg].
+     * DRAW, at most [raisePauseMaxMs] earlier. A raise longer than [raiseMaxMs] is bow handling, and
+     * its start is unknown. A DRAW segment that begins more than [raiseEndTiltDeg] off the aim has its
+     * draw start where the tilt comes within it, even when the raise start is unknown or the movement
+     * began under [raiseMinTiltDeg].
      */
     public fun shotBoundaries(samples: List<ImuSample>, phases: List<PhaseSegment> = detectPhases(samples)): ShotBoundaries? {
         val r = phases.indexOfFirst { it.phase == ShotPhase.RELEASE }
@@ -170,9 +176,11 @@ public class BowMovementAnalyzer(
             val drawStartMs = samples[s].timestamp
             while (s > 0 && !moving(s - 1) && drawStartMs - samples[s - 1].timestamp <= raisePauseMaxMs) s--
         }
+        val raiseStop = raiseEnd ?: s
         while (s > 0 && moving(s - 1)) s--
         // s == 0: the samples begin during the raise, whose start is unknown
-        val raised = s > 0 && tilt(s - 1) >= raiseMinTiltDeg && (!blended || raiseEnd != null)
+        val raised = s > 0 && tilt(s - 1) >= raiseMinTiltDeg && (!blended || raiseEnd != null) &&
+            samples[raiseStop].timestamp - samples[s].timestamp <= raiseMaxMs
 
         return ShotBoundaries(
             raiseStartIndex = s.takeIf { raised },

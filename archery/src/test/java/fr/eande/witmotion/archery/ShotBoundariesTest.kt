@@ -97,6 +97,22 @@ class ShotBoundariesTest {
     }
 
     @Test
+    fun `a raise longer than raiseMaxMs is unknown, its draw start is unchanged`() {
+        // Blended, the aim reached after about 6.7 s; paused, 7 s of rising then 1 s still
+        val blendedSlow = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000, ms = 8_000) + drawToRelease(9_000)
+        val pausedSlow = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000, ms = 7_000) + stretch(8_000, 1_000, gyro = 0f) + drawToRelease(9_000)
+
+        for (samples in listOf(blendedSlow, pausedSlow)) {
+            val patient = BowMovementAnalyzer(raiseMaxMs = 10_000).shotBoundaries(samples)!!
+            val b = analyzer.shotBoundaries(samples)!!
+
+            assertThat(samples[patient.raiseStartIndex!!].timestamp).isIn(980L..1_020L)
+            assertThat(b.raiseStartIndex).isNull()
+            assertThat(b.drawStartIndex).isEqualTo(patient.drawStartIndex)
+        }
+    }
+
+    @Test
     fun `a blended movement from under raiseMinTiltDeg is no raise, its draw starts at the aim`() {
         val samples = stretch(0, 1_000, gyro = 0f) { 15.0 } + rise(1_000, fromDeg = 15.0) + drawToRelease(4_000)
 
