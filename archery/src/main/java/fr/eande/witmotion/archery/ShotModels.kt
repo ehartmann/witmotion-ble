@@ -26,6 +26,13 @@ public data class ShotBoundaries(
 )
 
 /**
+ * The bow's rotation after the release, from [BowMovementAnalyzer.releaseRotation].
+ * [amplitudeDeg] is the largest angle turned since the release, [peakDps] the fastest rotation,
+ * [stopMs] the time after the peak for the speed to fall from 50 % to 10 % of it, null while it stays above 10 %.
+ */
+public data class ReleaseRotation(val amplitudeDeg: Float, val peakDps: Float, val stopMs: Long?)
+
+/**
  * Metrics computed for a single shot from IMU data.
  */
 public data class BowMovementMetrics(

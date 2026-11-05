@@ -254,6 +254,62 @@ public class BowMovementAnalyzer(
     public fun releaseJumpG(samples: List<ImuSample>, releaseIndex: Int): Float =
         maxJumpWithin(samples, releaseIndex, releaseWindowMs)
 
+    /**
+     * The bow's rotation over ([skipMs], [windowMs]] after the release at [releaseIndex], or null when no gyroscope
+     * sample falls there. The angle is integrated from the release with the samples' own timestamps.
+     */
+    public fun releaseRotation(
+        samples: List<ImuSample>,
+        releaseIndex: Int,
+        windowMs: Long = 3_000,
+        skipMs: Long = 100
+    ): ReleaseRotation? {
+        val t0 = samples[releaseIndex].timestamp
+        val angle = FloatArray(3)
+        var amplitude = 0f
+        var peak = -1f
+        var peakTime = 0L
+        val times = ArrayList<Long>()
+        val means = ArrayList<Float>()
+        var prev: ImuSample? = null
+        for (i in releaseIndex until samples.size) {
+            val s = samples[i]
+            if (s.timestamp - t0 > windowMs) break
+            val g = s.gyroscope ?: continue
+            prev?.let { p ->
+                val dt = (s.timestamp - p.timestamp) / 1000f
+                for (k in 0..2) angle[k] += (g[k] + p.gyroscope!![k]) / 2f * dt
+            }
+            prev = s
+            if (s.timestamp - t0 <= skipMs) continue
+            amplitude = maxOf(amplitude, sqrt(angle[0] * angle[0] + angle[1] * angle[1] + angle[2] * angle[2]))
+            val speed = gyroMagnitude(s)
+            if (speed > peak) {
+                peak = speed
+                peakTime = s.timestamp
+            }
+            times.add(s.timestamp)
+            means.add(meanSpeed(samples, i))
+        }
+        if (peak < 0f) return null
+        val from = times.indexOfFirst { it >= peakTime }
+        val t50 = (from until times.size).firstOrNull { means[it] <= peak * 0.5f }
+        val t10 = t50?.let { a -> (a until times.size).firstOrNull { means[it] <= peak * 0.1f } }
+        return ReleaseRotation(amplitude, peak, t10?.let { times[it] - times[t50] })
+    }
+
+    /** Mean rotation speed over the 40 ms up to sample [i]. */
+    private fun meanSpeed(samples: List<ImuSample>, i: Int): Float {
+        var sum = 0f
+        var n = 0
+        var j = i
+        while (j >= 0 && samples[i].timestamp - samples[j].timestamp <= 40) {
+            if (samples[j].gyroscope != null) { sum += gyroMagnitude(samples[j]); n++ }
+            j--
+        }
+        return sum / n
+    }
+
     /** Largest [accelJump] of the samples from [from] to [windowMs] after it. */
     internal fun maxJumpWithin(samples: List<ImuSample>, from: Int, windowMs: Long): Float {
         val start = samples[from].timestamp
