@@ -150,7 +150,9 @@ public class BowMovementAnalyzer(
      * Where the shot of [samples] starts its raise, draw, hold and release; null without a DRAW, a
      * HOLD and then a RELEASE. The tilt of a sample is the angle between its gravity (the mean
      * acceleration over the 100 ms ending at it) and the aim (the gravity over the first second of
-     * the hold). A raise starts after a rest at least [raiseMinTiltDeg] off the aim (the rest's last
+     * the hold). The bow rests where its gyro, averaged over the same 100 ms, is under [holdThreshold], so
+     * one still sample halfway up a raise or one twitch in the pause before the draw changes nothing.
+     * A raise starts after a rest at least [raiseMinTiltDeg] off the aim (the rest's last
      * sample, so a jolt starting the movement does not count), and ends within [raiseEndTiltDeg] of
      * it: inside the DRAW segment when the archer raises and draws in one movement, or before the
      * DRAW, at most [raisePauseMaxMs] earlier. A raise longer than [raiseMaxMs] is bow handling, and
@@ -165,9 +167,9 @@ public class BowMovementAnalyzer(
 
         val holdStartMs = samples[hold.startIndex].timestamp
         val aim = accelSum(samples, (hold.startIndex..hold.endIndex).takeWhile { samples[it].timestamp - holdStartMs < 1_000 }, unit = true)
-        fun tilt(i: Int) =
-            angleDeg(accelSum(samples, (i downTo 0).takeWhile { samples[i].timestamp - samples[it].timestamp < 100 }, unit = false), aim)
-        fun moving(i: Int) = gyroMagnitude(samples[i]) >= holdThreshold
+        fun window(i: Int) = (i downTo 0).takeWhile { samples[i].timestamp - samples[it].timestamp < 100 }
+        fun tilt(i: Int) = angleDeg(accelSum(samples, window(i), unit = false), aim)
+        fun moving(i: Int) = window(i).map { gyroMagnitude(samples[it]) }.average() >= holdThreshold
 
         val blended = tilt(draw.startIndex) > raiseEndTiltDeg
         val raiseEnd = if (blended) (draw.startIndex until hold.startIndex).firstOrNull { tilt(it) <= raiseEndTiltDeg } else null

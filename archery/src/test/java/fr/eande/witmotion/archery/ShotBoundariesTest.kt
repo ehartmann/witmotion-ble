@@ -62,6 +62,20 @@ class ShotBoundariesTest {
     }
 
     @Test
+    fun `a still sample halfway up the raise or a twitch in the pause keeps the raise's start`() {
+        // Seen on the 2026-10-20 recordings: one gyro sample under holdThreshold during a raise, sensor noise or a slow-down
+        val dip = blended.map { if (it.timestamp == 2_500L) it.copy(gyroscope = floatArrayOf(2f, 0f, 0f)) else it }
+        val twitch = raisePauseDraw.map { if (it.timestamp == 4_500L) it.copy(gyroscope = floatArrayOf(10f, 0f, 0f)) else it }
+
+        for (samples in listOf(dip, twitch)) {
+            val b = analyzer.shotBoundaries(samples)!!
+
+            assertThat(b.raiseStartIndex).isNotNull()
+            assertThat(samples[b.raiseStartIndex!!].timestamp).isIn(980L..1_020L)
+        }
+    }
+
+    @Test
     fun `a bow already up has no raise`() {
         val drawnFromTheStart = drawToRelease(0)
         // Still 3 s, then turned at the aim's height: moving, but the gravity does not tilt
