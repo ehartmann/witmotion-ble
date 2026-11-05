@@ -5,16 +5,17 @@ import fr.eande.witmotion.ImuSample
 /**
  * Detects individual shot cycles from a stream of IMU samples.
  *
- * A shot runs from the start of the last draw before the release (earlier draw/hold back and forth,
- * handling the bow, is left out) to [afterReleaseMs] after the release (a typical shot: about 6 s
- * of draw and aim, then 3 s of follow-through), and is emitted as soon as that follow-through
- * time has elapsed. [BowMovementAnalyzer] finds the phases
+ * A shot runs from [RAISE_LEAD_MS] before the raise of the bow, when
+ * [BowMovementAnalyzer.shotBoundaries] finds one, or else from the start of the last draw before the
+ * release (earlier draw/hold back and forth, handling the bow, is left out), to [afterReleaseMs]
+ * after the release (a typical shot: about 6 s of draw and aim, then 3 s of follow-through), and is
+ * emitted as soon as that follow-through time has elapsed. [BowMovementAnalyzer] finds the phases
  * (DRAW -> HOLD -> RELEASE -> FOLLOW_THROUGH) over the buffered samples.
  *
  * All limits are durations, so the behaviour does not depend on the sensor rate. While no draw is
- * in progress only the last [idleKeepMs] are kept, which bounds memory and the phase-detection
- * cost over a long session; a draw that reaches no release within [maxDrawMs] is dropped (stuck
- * draw, bow handled without shooting).
+ * in progress only the last [idleKeepMs] are kept, enough for a raise and its pause before the draw,
+ * which bounds memory and the phase-detection cost over a long session; a draw that reaches no
+ * release within [maxDrawMs] is dropped (stuck draw, bow handled without shooting).
  *
  * Thread safety: [onSample] and [flush] are synchronized to allow safe calls from
  * BLE callback and main threads respectively. `onShotDetected` is called on the thread that
@@ -25,15 +26,26 @@ public class ShotCycleDetector(
     private val analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
     private val afterReleaseMs: Long = 3_000,
     private val maxDrawMs: Long = 30_000,
-    private val idleKeepMs: Long = 2_000,
+    private val idleKeepMs: Long = 6_000,
     private val onShotDetected: (DetectedShot) -> Unit
 ) {
+    /**
+     * A shot's samples and its metrics, measured from its last draw. The timestamps are where
+     * [BowMovementAnalyzer.shotBoundaries] puts the shot's raise, draw, hold and release, null when not found.
+     */
     public data class DetectedShot(
         val samples: List<ImuSample>,
-        val metrics: BowMovementMetrics?
+        val metrics: BowMovementMetrics?,
+        val raiseStartTimestamp: Long? = null,
+        val drawStartTimestamp: Long? = null,
+        val holdStartTimestamp: Long? = null,
+        val releaseTimestamp: Long? = null
     )
 
     public companion object {
+        /** A shot's samples start this long before its raise, or at the oldest sample kept. */
+        public const val RAISE_LEAD_MS: Long = 1_000
+
         /**
          * Runs detection over a finished recording, including a shot cut short by its end.
          * A Sequence lets callers stream a long recording instead of loading it whole.
@@ -98,7 +110,7 @@ public class ShotCycleDetector(
         }
         releaseSeen = true
         if (sample.timestamp - buffer[release.startIndex].timestamp >= afterReleaseMs) {
-            return emitShot(lastDrawStart(phases, release) ?: start)
+            return emitShot(lastDrawStart(phases, release) ?: start, phases)
         }
         return null
     }
@@ -120,7 +132,7 @@ public class ShotCycleDetector(
         }
         val phases = analyzer.detectPhases(buffer)
         val release = phases.firstOrNull { it.phase == ShotPhase.RELEASE && it.startIndex >= start }
-        return emitShot(release?.let { lastDrawStart(phases, it) } ?: start)
+        return emitShot(release?.let { lastDrawStart(phases, it) } ?: start, phases)
     }
 
     /**
@@ -148,11 +160,23 @@ public class ShotCycleDetector(
         return phases.getOrNull(phases.indexOf(hold) - 1)?.takeIf { it.phase == ShotPhase.DRAW }?.startIndex
     }
 
-    private fun emitShot(start: Int): DetectedShot {
+    private fun emitShot(drawStart: Int, phases: List<BowMovementAnalyzer.PhaseSegment>): DetectedShot {
+        val b = analyzer.shotBoundaries(buffer, phases)
+        fun time(i: Int?) = i?.let { buffer[it].timestamp }
+        val raise = time(b?.raiseStartIndex)
+        val start = raise?.let { r -> buffer.indexOfFirst { it.timestamp >= r - RAISE_LEAD_MS } } ?: drawStart
         observer?.shot(buffer, start)
-        val shotSamples = buffer.subList(start, buffer.size).toList()
+        val shot = DetectedShot(
+            samples = buffer.subList(start, buffer.size).toList(),
+            // From the last draw: a still pause between the raise and the draw is not the aim's hold
+            metrics = analyzer.analyze(buffer.subList(drawStart, buffer.size)).metrics,
+            raiseStartTimestamp = raise,
+            drawStartTimestamp = time(b?.drawStartIndex),
+            holdStartTimestamp = time(b?.holdStartIndex),
+            releaseTimestamp = time(b?.releaseIndex)
+        )
         reset()
-        return DetectedShot(shotSamples, analyzer.analyze(shotSamples).metrics)
+        return shot
     }
 
     private fun reset() {

@@ -63,8 +63,8 @@ public data class Spike(val tMs: Long, val jumpG: Float)
  *
  * [afterReleaseMs] must equal the value passed to [ShotCycleDetector.detectAll] for `shots` to agree.
  *
- * Memory is the detector's buffer (at most `maxDrawMs` plus `afterReleaseMs` of samples) plus the
- * samples of the last 20 ms: nothing grows with the length of the recording but the report.
+ * Memory is the detector's buffer (at most `idleKeepMs`, `maxDrawMs` and `afterReleaseMs` of samples)
+ * plus the samples of the last 20 ms: nothing grows with the length of the recording but the report.
  */
 public object DetectionDiagnostics {
     public fun explain(

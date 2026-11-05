@@ -228,7 +228,7 @@ class DetectionDiagnosticsTest {
         assertThat(report.shots).hasSize(90)
         assertThat(report.nearMisses).isEmpty()
         assertThat(run.peakBufferedSamples).isGreaterThan(0)
-        assertThat(run.peakBufferedSamples).isAtMost(1_000)
+        assertThat(run.peakBufferedSamples).isAtMost(1_400)   // 6 s kept before the draw, then 7 s of shot
     }
 
     private fun Stream.prematureRelease() {
