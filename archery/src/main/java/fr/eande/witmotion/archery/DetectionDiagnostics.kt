@@ -111,6 +111,9 @@ internal class DiagnosticsRun(
     private var spikeJump = 0f
     private var spikeOpen = false
 
+    // A stuck restart keeps samples before the latest draw that its drop already explained
+    private var explainedBefore = Long.MIN_VALUE
+
     var peakBufferedSamples = 0
         private set
 
@@ -158,10 +161,12 @@ internal class DiagnosticsRun(
         spikes.filterTo(weakSpikes) { it.tMs !in window.releaseMs..window.endMs }
         spikes.clear()
         explainAttempts(buffer, phases, upTo = from, keepOpen = false, stuck = false)
+        explainedBefore = Long.MIN_VALUE
     }
 
     override fun dropped(buffer: List<ImuSample>, upTo: Int, stuck: Boolean) {
         explainAttempts(buffer, analyzer.detectPhases(buffer), upTo, keepOpen = true, stuck = stuck)
+        explainedBefore = if (stuck && upTo < buffer.size) buffer[upTo].timestamp else Long.MIN_VALUE
     }
 
     private fun explainAttempts(
@@ -174,6 +179,7 @@ internal class DiagnosticsRun(
         var attempt: Attempt? = null
         for ((k, seg) in phases.withIndex()) {
             if (seg.startIndex >= upTo || seg.phase == ShotPhase.RELEASE || seg.phase == ShotPhase.FOLLOW_THROUGH) break
+            if (buffer[seg.startIndex].timestamp < explainedBefore) continue
             if (seg.phase == ShotPhase.DRAW && attempt == null) attempt = Attempt(seg.startIndex)
             if (seg.phase != ShotPhase.HOLD) continue
             val current = attempt ?: continue

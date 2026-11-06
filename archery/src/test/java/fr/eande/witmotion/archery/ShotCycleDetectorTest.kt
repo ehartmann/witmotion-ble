@@ -97,20 +97,28 @@ class ShotCycleDetectorTest {
     }
 
     @Test
-    fun `a window cut inside a raise, by a restart or a clock reset, has no raise and a draw start at the aim`() {
-        // Handling started the clock 2.7 s before the raise: the 9 s window restarts at the raise's movement
-        val restarted = stretch(0, 700, 30f) { 60.0 } + stretch(700, 2_000, 0f) { 60.0 } + raiseToShot(2_700)
+    fun `a stuck-draw restart keeps the raise of the shot in progress`() {
+        // The bow lowered at 0 starts the clock, rests 24 s, rises at 24.7 s: the 30 s restart falls in the hold
+        val stream = stretch(0, 700, 30f) { 60.0 } + stretch(700, 24_000, 0f) { 60.0 } + raiseToShot(24_700)
+
+        val shot = detectRealistic(stream)
+
+        assertThat(shot.raiseStartTimestamp).isEqualTo(24_700L)
+        assertThat(shot.samples.first().timestamp).isEqualTo(24_700L - ShotCycleDetector.RAISE_LEAD_MS)
+        assertThat(shot.drawStartTimestamp).isIn(27_200L..27_300L)
+        assertThat(shot.releaseTimestamp).isEqualTo(32_700L)
+    }
+
+    @Test
+    fun `a window cut inside a raise by a clock reset has no raise and a draw start at the aim`() {
         // The clock restarts from 0 halfway up the raise
         val reset = stretch(1_000_000, 1_000, 0f) { 60.0 } + raiseToShot(-1_500).filter { it.timestamp >= 0 }
 
-        for ((stream, startMs, aim) in listOf(Triple(restarted, 2_700L, 5_200L..5_300L), Triple(reset, 0L, 1_000L..1_100L))) {
-            detectedShots.clear()
-            val shot = detectRealistic(stream, maxDrawMs = 9_000)
+        val shot = detectRealistic(reset, maxDrawMs = 9_000)
 
-            assertThat(shot.raiseStartTimestamp).isNull()
-            assertThat(shot.samples.first().timestamp).isEqualTo(startMs)
-            assertThat(shot.drawStartTimestamp).isIn(aim)
-        }
+        assertThat(shot.raiseStartTimestamp).isNull()
+        assertThat(shot.samples.first().timestamp).isEqualTo(0L)
+        assertThat(shot.drawStartTimestamp).isIn(1_000L..1_100L)
     }
 
     @Test

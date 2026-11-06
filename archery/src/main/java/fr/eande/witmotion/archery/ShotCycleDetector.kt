@@ -181,14 +181,17 @@ public class ShotCycleDetector(
     /**
      * The shot clock starts at the first movement after the previous shot, often the bow being
      * lowered; a slow archer then releases more than [maxDrawMs] later. Rather than dropping the
-     * draw in progress, the clock restarts at the latest movement; with none recent, all is dropped.
+     * draw in progress, the clock restarts at the latest movement, keeping [idleKeepMs] before it as
+     * while idle (the latest movement is often the raise, which needs its rest); with none recent, all
+     * is dropped.
      */
     private fun restartAtLatestDraw(phases: List<BowMovementAnalyzer.PhaseSegment>, start: Int) {
         val latest = phases.lastOrNull { it.phase == ShotPhase.DRAW }?.startIndex
         if (latest != null && latest > start && buffer.last().timestamp - buffer[latest].timestamp <= maxDrawMs) {
+            val keepFrom = buffer.indexOfFirst { it.timestamp >= buffer[latest].timestamp - idleKeepMs }
             observer?.dropped(buffer, latest, stuck = true)
-            buffer.subList(0, latest).clear()
-            shotStartIndex = 0
+            buffer.subList(0, keepFrom).clear()
+            shotStartIndex = latest - keepFrom
             releaseSeen = false
         } else {
             observer?.dropped(buffer, buffer.size, stuck = true)

@@ -165,6 +165,21 @@ class DetectionDiagnosticsTest {
     }
 
     @Test
+    fun `a near miss in the samples a restart keeps before the latest draw is reported once`() {
+        val s = Stream().apply {
+            idle(); draw(700); feed(24_000, 6f); hold(1_000)   // handling starts the clock: NO_SPIKE
+            draw(); hold(1_000)                                // NO_SPIKE, 2 s before the latest draw
+            draw(); hold(2_000); release(); followThrough()    // the 30 s restart falls in this hold
+        }
+
+        val report = s.explain()
+
+        assertThat(report.shots).hasSize(1)
+        assertThat(report.nearMisses.map { it.drawStartMs }).containsExactly(200L, 25_900L).inOrder()
+        assertThat(report.nearMisses.map { it.reason }).containsExactly(Reason.NO_SPIKE, Reason.NO_SPIKE)
+    }
+
+    @Test
     fun `shots agree with detectAll on a mixed stream of 2 shots and 3 near misses`() {
         val s = Stream().apply {
             idle(); draw(); hold(1_000); draw(300)                       // NO_SPIKE
