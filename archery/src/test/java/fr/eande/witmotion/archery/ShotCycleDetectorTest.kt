@@ -110,6 +110,27 @@ class ShotCycleDetectorTest {
     }
 
     @Test
+    fun `a stuck-draw restart keeps exactly idleKeepMs before the latest draw and restarts the clock there`() {
+        // As above, but the bow is held at the aim with no release
+        val stream = stretch(0, 700, 30f) { 60.0 } + stretch(700, 24_000, 0f) { 60.0 } +
+            stretch(24_700, 3_000, 25f) { dt -> 60.0 * (1 - dt / 3_000.0) } + stretch(27_700, 2_000, 25f) + stretch(29_700, 31_000, 1f)
+        val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000)
+        val stuckDrops = mutableListOf<Long>()
+        detector.observer = object : ShotCycleDetector.Observer {
+            override fun shot(buffer: List<ImuSample>, from: Int) = Unit
+            override fun dropped(buffer: List<ImuSample>, upTo: Int, stuck: Boolean) { if (stuck) stuckDrops += buffer.last().timestamp }
+        }
+
+        stream.filter { it.timestamp <= 30_020 }.forEach(detector::onSample)
+        assertThat(detector.bufferedSamples).isEqualTo((30_020 - 18_700) / 20 + 1)   // from 24 700 - 6 000
+        stream.filter { it.timestamp > 30_020 }.forEach(detector::onSample)
+
+        // Restarted at 30 020; the clock then runs from the raise at 24 700, so all is dropped 30 s later
+        assertThat(stuckDrops).containsExactly(30_020L, 54_720L).inOrder()
+        assertThat(detectedShots).isEmpty()
+    }
+
+    @Test
     fun `a window cut inside a raise by a clock reset has no raise and a draw start at the aim`() {
         // The clock restarts from 0 halfway up the raise
         val reset = stretch(1_000_000, 1_000, 0f) { 60.0 } + raiseToShot(-1_500).filter { it.timestamp >= 0 }
