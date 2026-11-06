@@ -17,6 +17,7 @@ public enum class ShotPhase {
 /**
  * The phase the bow is in as samples arrive, from [ShotCycleDetector]'s `onPhase`. [sinceTimestamp] is,
  * for a HOLD, its first calm sample (the origin of `holdTimeMs`), else the sample where the phase was first seen.
+ * HOLD means calm after a movement, not aiming: a lowered bow at rest also reads HOLD, so check the tilt.
  */
 public data class LivePhase(val phase: ShotPhase, val sinceTimestamp: Long)
 

@@ -20,6 +20,9 @@ import fr.eande.witmotion.ImuSample
  * `onPhase` reports the [LivePhase] once, when it changes: a HOLD once the bow stayed calm for the
  * analyzer's `minHoldMs` (DRAW until then), and IDLE after a reset (a shot emitted, [flush], timestamps
  * restarting) or a link gap (over 1 s without samples). A HOLD begun before such a gap is never reported.
+ * A draw stuck past [maxDrawMs] resets the buffer. When timestamps restart and the first new sample is
+ * already moving, DRAW is reported with no IDLE before it. At low sample rates a transient DRAW of up to
+ * `releaseWindowMs` can be reported before RELEASE.
  *
  * Thread safety: [onSample] and [flush] are synchronized to allow safe calls from
  * BLE callback and main threads respectively. `onPhase`, then `onShotDetected`, are called on the
