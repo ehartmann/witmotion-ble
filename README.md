@@ -82,6 +82,20 @@ never leaves the sensor without angles. A disconnect or a new connect during a c
 once, with `aborted` set in the result. The timestamp frame length (18 bytes in the protocol
 table, maybe 20) is detected and logged (`Timestamp frames are N bytes`).
 
+```kotlin
+val detector = ShotCycleDetector(
+    onPhase = { live -> /* LivePhase(phase, sinceTimestamp): once per change */ },
+    onShotDetected = { shot -> /* DetectedShot: samples from 1 s before the raise, boundary timestamps */ }
+)
+val b = analyzer.shotBoundaries(samples)        // ShotBoundaries: raise, draw, hold, release indices; null without them
+val rot = analyzer.releaseRotation(samples, releaseIndex)  // ReleaseRotation: amplitude, peak, stop time
+```
+
+`ShotPhase.RAISE` is never returned by `detectPhases`; `shotBoundaries` finds the raise. `onPhase`
+(`LivePhase`) runs outside the detector lock, like `onShotDetected` and before it; deliveries from
+two threads (`onSample`, `flush`) may arrive out of order, and after `flush` the phase is IDLE.
+HOLD means calm after a movement, not aiming: a lowered bow at rest also reads HOLD, so check the tilt.
+
 `ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect. Its
 scans are filtered on the registered sensors, so they keep running with the screen off.
 
@@ -177,6 +191,21 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 (as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Changelog
+
+### 0.7.0
+
+Adds the raise, phase boundaries, a live phase and the release rotation. Source-compatible; **not binary-compatible** for code that calls the constructors of `DetectedShot` (constructor, `copy`, `equals`/`hashCode`), `BowMovementAnalyzer` (new parameters) or `ShotCycleDetector` (`onPhase` sits before `onShotDetected`): such code fails with `NoSuchMethodError` until recompiled. `detectPhases` is unchanged.
+
+- **New:** `ShotPhase.RAISE`, appended (`detectPhases` never emits it).
+- **New:** `BowMovementAnalyzer.shotBoundaries` returns `ShotBoundaries` (raise, draw, hold and release indices), with the constructor parameters `raiseMinTiltDeg`, `raiseEndTiltDeg`, `raisePauseMaxMs` and `raiseMaxMs` (6 s; a longer movement is bow handling). A raise's rest is a calm gyro over 100 ms, not one still sample.
+- **New:** `DetectedShot` carries `raiseStartTimestamp`, `drawStartTimestamp`, `holdStartTimestamp` and `releaseTimestamp`, null by default; `ShotCycleDetector.RAISE_LEAD_MS` (1 s).
+- **New:** `ShotCycleDetector` `onPhase` reports a `LivePhase` once per change. It runs outside the lock, before `onShotDetected`; deliveries from two threads may arrive out of order; after `flush` the phase is IDLE. HOLD means calm after movement, not aiming: a lowered bow at rest also reads HOLD.
+- **New:** `BowMovementAnalyzer.releaseRotation` returns `ReleaseRotation` (amplitude, peak speed, stop time).
+- **Behaviour change:** `idleKeepMs` defaults to 6 s (was 2 s), enough for a raise and its pause.
+- **Behaviour change:** a shot's samples start 1 s before its raise (`RAISE_LEAD_MS`), when one is found.
+- **Behaviour change:** re-analysis (`analyze`/`computeMetrics`, `ShotErrorClassifier.classify`, `samplesToTrace`) reads the aim's HOLD, the one before the release, not the first HOLD; `samplesToTrace` labels any other HOLD as IDLE.
+- **Behaviour change:** `DetectedWindow.drawStartMs` is now the shot's sample start (see `DetectionDiagnostics`).
+- `ShotCycleDetector`: a stuck draw past `maxDrawMs` resets; a timestamp restart whose first sample moves reports DRAW with no IDLE first; at low rates a transient DRAW of up to `releaseWindowMs` can come before RELEASE.
 
 ### 0.6.1
 
