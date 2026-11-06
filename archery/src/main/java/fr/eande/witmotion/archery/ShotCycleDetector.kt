@@ -44,6 +44,10 @@ public class ShotCycleDetector(
     private val onPhase: (LivePhase) -> Unit = {},
     private val onShotDetected: (DetectedShot) -> Unit
 ) {
+    init {
+        require(idleKeepMs >= 0) { "idleKeepMs must not be negative: $idleKeepMs" }
+    }
+
     /**
      * A shot's samples, from [RAISE_LEAD_MS] before its raise when it has one, else from its last draw,
      * and its metrics, measured from its last draw. The timestamps are where

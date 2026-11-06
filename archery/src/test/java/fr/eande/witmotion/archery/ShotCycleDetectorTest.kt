@@ -299,6 +299,14 @@ class ShotCycleDetectorTest {
     }
 
     @Test
+    fun `a negative idleKeepMs is rejected at construction`() {
+        val thrown = runCatching { ShotCycleDetector(idleKeepMs = -1) { } }.exceptionOrNull()
+
+        assertThat(thrown).isInstanceOf(IllegalArgumentException::class.java)
+        ShotCycleDetector(idleKeepMs = 0) { }
+    }
+
+    @Test
     fun `memory stays bounded while waiting for a draw`() {
         val detector = detector()
         detector.feed(600_000, 0f)                         // 10 minutes connected, at rest
