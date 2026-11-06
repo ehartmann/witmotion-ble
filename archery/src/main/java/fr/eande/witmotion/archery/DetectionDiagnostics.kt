@@ -114,6 +114,9 @@ internal class DiagnosticsRun(
     // A stuck restart keeps samples before the latest draw that its drop already explained
     private var explainedBefore = Long.MIN_VALUE
 
+    // The near misses from this index on come from the open window's stuck restarts
+    private var windowMisses = 0
+
     var peakBufferedSamples = 0
         private set
 
@@ -160,13 +163,18 @@ internal class DiagnosticsRun(
         // A spike before this release cannot fall in a later shot
         spikes.filterTo(weakSpikes) { it.tMs !in window.releaseMs..window.endMs }
         spikes.clear()
+        // A restart keeps samples before its latest draw, so it may have explained this shot's raise
+        nearMisses.subList(windowMisses, nearMisses.size).removeAll { it.drawStartMs >= window.drawStartMs }
         explainAttempts(buffer, phases, upTo = from, keepOpen = false, stuck = false)
         explainedBefore = Long.MIN_VALUE
+        windowMisses = nearMisses.size
     }
 
     override fun dropped(buffer: List<ImuSample>, upTo: Int, stuck: Boolean) {
         explainAttempts(buffer, analyzer.detectPhases(buffer), upTo, keepOpen = true, stuck = stuck)
-        explainedBefore = if (stuck && upTo < buffer.size) buffer[upTo].timestamp else Long.MIN_VALUE
+        val restart = stuck && upTo < buffer.size
+        explainedBefore = if (restart) buffer[upTo].timestamp else Long.MIN_VALUE
+        if (!restart) windowMisses = nearMisses.size
     }
 
     private fun explainAttempts(
