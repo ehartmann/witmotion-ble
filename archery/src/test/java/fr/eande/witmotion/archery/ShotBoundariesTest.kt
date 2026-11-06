@@ -101,6 +101,17 @@ class ShotBoundariesTest {
     }
 
     @Test
+    fun `a link gap over 1 s across the start of a raise makes it unknown, not later`() {
+        // No samples from 0.8 s to 2.2 s: the first sample after the gap would read as a raise start
+        val gapped = blended.filter { it.timestamp !in 800L until 2_200L }
+
+        val b = analyzer.shotBoundaries(gapped)!!
+
+        assertThat(b.raiseStartIndex).isNull()
+        assertThat(gapped[b.drawStartIndex].timestamp).isIn(3_500L..3_600L)
+    }
+
+    @Test
     fun `a pause longer than raisePauseMaxMs before the draw keeps no raise`() {
         val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) + stretch(4_000, 2_500, gyro = 0f) + drawToRelease(6_500)
 

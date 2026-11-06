@@ -55,8 +55,11 @@ public class ShotCycleDetector(
         /** A shot's samples start this long before its raise, or at the oldest sample kept. */
         public const val RAISE_LEAD_MS: Long = 1_000
 
-        /** A longer silence between two samples is a link gap: the live phase restarts from IDLE. */
-        private const val MAX_GAP_MS: Long = 1_000
+        /**
+         * A longer silence between two samples is a link gap: the live phase restarts from IDLE, and
+         * [BowMovementAnalyzer.shotBoundaries] does not date a raise across it.
+         */
+        internal const val MAX_GAP_MS: Long = 1_000
 
         /**
          * Runs detection over a finished recording, including a shot cut short by its end.

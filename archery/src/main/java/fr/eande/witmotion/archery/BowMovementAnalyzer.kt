@@ -156,7 +156,8 @@ public class BowMovementAnalyzer(
      * sample, so a jolt starting the movement does not count), and ends within [raiseEndTiltDeg] of
      * it: inside the DRAW segment when the archer raises and draws in one movement, or before the
      * DRAW, at most [raisePauseMaxMs] earlier. A raise longer than [raiseMaxMs] is bow handling, and
-     * its start is unknown. A DRAW segment that begins more than [raiseEndTiltDeg] off the aim has its
+     * its start is unknown; so is the start of a raise with a link gap (over 1 s without samples) between
+     * its rest and its end. A DRAW segment that begins more than [raiseEndTiltDeg] off the aim has its
      * draw start where the tilt comes within it, even when the raise start is unknown or the movement
      * began under [raiseMinTiltDeg].
      */
@@ -182,7 +183,8 @@ public class BowMovementAnalyzer(
         while (s > 0 && moving(s - 1)) s--
         // s == 0: the samples begin during the raise, whose start is unknown
         val raised = s > 0 && tilt(s - 1) >= raiseMinTiltDeg && (!blended || raiseEnd != null) &&
-            samples[raiseStop].timestamp - samples[s].timestamp <= raiseMaxMs
+            samples[raiseStop].timestamp - samples[s].timestamp <= raiseMaxMs &&
+            (s..raiseStop).none { samples[it].timestamp - samples[it - 1].timestamp > ShotCycleDetector.MAX_GAP_MS }
 
         return ShotBoundaries(
             raiseStartIndex = s.takeIf { raised },
