@@ -89,6 +89,7 @@ val detector = ShotCycleDetector(
 )
 val b = analyzer.shotBoundaries(samples)        // ShotBoundaries: raise, draw, hold, release indices; null without them
 val rot = analyzer.releaseRotation(samples, releaseIndex)  // ReleaseRotation: amplitude, peak, stop time
+analyzer.raiseEndTiltDeg                        // 10°: within this tilt of the aim, the bow is up (a raise ends there)
 ```
 
 `ShotPhase.RAISE` is never returned by `detectPhases`; `shotBoundaries` finds the raise. `onPhase`
@@ -202,6 +203,7 @@ Adds the raise, phase boundaries, a live phase and the release rotation. Source-
 - **New:** `BowMovementAnalyzer.shotBoundaries` returns `ShotBoundaries` (raise, draw, hold and release indices), with the constructor parameters `raiseMinTiltDeg`, `raiseEndTiltDeg`, `raisePauseMaxMs` and `raiseMaxMs` (6 s; a longer movement is bow handling). A raise's rest is a calm gyro over 100 ms, not one still sample. A raise across a link gap (over 1 s without samples) is unknown.
 - **New:** `DetectedShot` carries `raiseStartTimestamp`, `drawStartTimestamp`, `holdStartTimestamp` and `releaseTimestamp`, null by default; `ShotCycleDetector.RAISE_LEAD_MS` (1 s).
 - **New:** `ShotCycleDetector` `onPhase` reports a `LivePhase` once per change. It runs outside the lock, before `onShotDetected`, which runs even if `onPhase` throws. Deliveries from two threads may arrive out of order: after `flush` the detector is IDLE, but the last delivery may be an older HOLD, so reset the consumer's state when recording stops. HOLD means calm after movement, not aiming: a lowered bow at rest also reads HOLD.
+- **New:** `BowMovementAnalyzer.raiseEndTiltDeg` is public (10° by default), for callers checking that the bow is at the aim.
 - **New:** `BowMovementAnalyzer.releaseRotation` returns `ReleaseRotation` (amplitude, peak speed, stop time).
 - **Behaviour change:** `idleKeepMs` defaults to 6 s (was 2 s), enough for a raise and its pause. A raise too slow to read as a draw (under about 20°/s) must fit in it with its pause and the rest before it: a longer one reads unknown, and one within 1 s of that limit has its samples start at the buffer's start. A negative `idleKeepMs` throws `IllegalArgumentException`.
 - **Behaviour change:** a shot's samples start 1 s before its raise (`RAISE_LEAD_MS`), when one is found.

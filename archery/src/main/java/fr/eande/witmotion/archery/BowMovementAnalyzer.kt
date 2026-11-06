@@ -34,7 +34,7 @@ public class BowMovementAnalyzer(
     /** A raise starts from a rest with the gravity at least this far from the aim (°), see [shotBoundaries]. */
     internal val raiseMinTiltDeg: Float = 20f,
     /** A raise ends when the gravity comes within this angle of the aim (°). */
-    internal val raiseEndTiltDeg: Float = 10f,
+    public val raiseEndTiltDeg: Float = 10f,
     /** Longest pause between a raise and the draw that still keeps the raise. */
     internal val raisePauseMaxMs: Long = 2_000,
     /**
