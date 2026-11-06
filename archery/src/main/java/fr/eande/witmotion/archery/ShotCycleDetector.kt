@@ -14,20 +14,27 @@ import fr.eande.witmotion.ImuSample
  *
  * All limits are durations, so the behaviour does not depend on the sensor rate. While no draw is
  * in progress only the last [idleKeepMs] are kept, enough for a raise and its pause before the draw,
- * which bounds memory and the phase-detection cost over a long session; a draw that reaches no
- * release within [maxDrawMs] is dropped (stuck draw, bow handled without shooting).
+ * which bounds memory and the phase-detection cost over a long session. A raise too slow to read as a
+ * draw (under about 20°/s) must fit in [idleKeepMs] with its pause and the rest before it: a longer one
+ * reads unknown, and one within [RAISE_LEAD_MS] of that limit has its samples start at the buffer's start.
+ * When no release comes within [maxDrawMs] of the first draw (the bow handled without shooting, or
+ * lowered after the previous shot), detection restarts at the latest draw and keeps [idleKeepMs] before
+ * it, so the raise of the shot in progress stays; with no newer draw in the last [maxDrawMs], all is dropped.
  *
  * `onPhase` reports the [LivePhase] once, when it changes: a HOLD once the bow stayed calm for the
  * analyzer's `minHoldMs` (DRAW until then), and IDLE after a reset (a shot emitted, [flush], timestamps
- * restarting) or a link gap (over 1 s without samples). A HOLD begun before such a gap is never reported.
- * A draw stuck past [maxDrawMs] resets the buffer. When timestamps restart and the first new sample is
- * already moving, DRAW is reported with no IDLE before it. At low sample rates a transient DRAW of up to
- * `releaseWindowMs` can be reported before RELEASE.
+ * restarting, all dropped past [maxDrawMs]) or a link gap (over 1 s without samples). A HOLD begun before
+ * such a gap is never reported. A restart at the latest draw leaves the live phase unchanged. When
+ * timestamps restart and the first new sample is already moving, DRAW is reported with no IDLE before it.
+ * At low sample rates a transient DRAW of up to `releaseWindowMs` can be reported before RELEASE.
  *
  * Thread safety: [onSample] and [flush] are synchronized to allow safe calls from
  * BLE callback and main threads respectively. `onPhase`, then `onShotDetected`, are called on the
  * thread that made the change (the BLE thread for [onSample]), after the lock is released: a slow
- * consumer delays that thread but may call back into the detector from another thread.
+ * consumer delays that thread but may call back into the detector from another thread. `onShotDetected`
+ * runs even if `onPhase` throws. Deliveries from two threads may arrive out of order: after [flush] the
+ * detector is IDLE, but the consumer's last delivery may be an older phase, such as a HOLD computed on the
+ * BLE thread just before, so reset the consumer's state when recording stops.
  */
 public class ShotCycleDetector(
     private val analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
