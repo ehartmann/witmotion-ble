@@ -8,8 +8,37 @@ public enum class ShotPhase {
     DRAW,
     HOLD,
     RELEASE,
-    FOLLOW_THROUGH
+    FOLLOW_THROUGH,
+
+    /** The bow rising from its rest to the aim. [BowMovementAnalyzer.detectPhases] never emits it: see [ShotBoundaries]. */
+    RAISE
 }
+
+/**
+ * The phase the bow is in as samples arrive, from [ShotCycleDetector]'s `onPhase`. [sinceTimestamp] is,
+ * for a HOLD, its first calm sample (the origin of `holdTimeMs`), else the sample where the phase was first seen.
+ * HOLD means calm after a movement, not aiming: a lowered bow at rest also reads HOLD, so check the tilt.
+ */
+public data class LivePhase(val phase: ShotPhase, val sinceTimestamp: Long)
+
+/**
+ * Sample indices where a shot's phases start, from [BowMovementAnalyzer.shotBoundaries].
+ * [raiseStartIndex] is null when no raise is found (the bow was already up), the samples begin during it,
+ * or it lasts longer than `raiseMaxMs` (bow handling).
+ */
+public data class ShotBoundaries(
+    val raiseStartIndex: Int?,
+    val drawStartIndex: Int,
+    val holdStartIndex: Int,
+    val releaseIndex: Int
+)
+
+/**
+ * The bow's rotation after the release, from [BowMovementAnalyzer.releaseRotation].
+ * [amplitudeDeg] is the largest angle turned since the release, [peakDps] the fastest rotation,
+ * [stopMs] the time after the peak for the speed to fall from 50 % to 10 % of it, null while it stays above 10 %.
+ */
+public data class ReleaseRotation(val amplitudeDeg: Float, val peakDps: Float, val stopMs: Long?)
 
 /**
  * Metrics computed for a single shot from IMU data.

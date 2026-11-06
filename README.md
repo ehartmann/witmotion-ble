@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("fr.eande.witmotion:archery:0.6.1") // pulls :ble; or fr.eande.witmotion:ble alone
+implementation("fr.eande.witmotion:archery:0.7.0") // pulls :ble; or fr.eande.witmotion:ble alone
 ```
 
 To develop an app against a local checkout instead, add to its `settings.gradle.kts`
@@ -44,12 +44,12 @@ and build with `-Pwitmotion.local`; the included build then needs the same AGP v
 ### Releasing
 
 ```bash
-git tag v0.6.1 && git push origin v0.6.1
+git tag v0.7.0 && git push origin v0.7.0
 ```
 
 The Release workflow runs the unit tests and lint, builds the AARs with that version and creates
 the release, its notes listing the commits since the previous tag. Locally:
-`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.6.1` writes the same
+`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.7.0` writes the same
 files to `build/release-repo/`.
 
 ### API
@@ -81,6 +81,23 @@ listener records, so the app must not record during a check. The angles are rest
 never leaves the sensor without angles. A disconnect or a new connect during a check ends it at
 once, with `aborted` set in the result. The timestamp frame length (18 bytes in the protocol
 table, maybe 20) is detected and logged (`Timestamp frames are N bytes`).
+
+```kotlin
+val detector = ShotCycleDetector(
+    onPhase = { live -> /* LivePhase(phase, sinceTimestamp): once per change */ },
+    onShotDetected = { shot -> /* DetectedShot: samples from RAISE_LEAD_MS (1 s) before the raise, boundary timestamps */ }
+)
+val b = analyzer.shotBoundaries(samples)        // ShotBoundaries: raise, draw, hold, release indices; null without them
+val rot = analyzer.releaseRotation(samples, releaseIndex)  // ReleaseRotation: amplitude, peak, stop time
+analyzer.raiseEndTiltDeg                        // 10°: within this tilt of the aim, the bow is up (a raise ends there)
+```
+
+`ShotPhase.RAISE` is never returned by `detectPhases`; `shotBoundaries` finds the raise. `onPhase`
+(`LivePhase`) runs outside the detector lock, like `onShotDetected` and before it. Deliveries from
+two threads (`onSample`, `flush`) may arrive out of order: after `flush` the detector is IDLE, but the
+last delivery may be an older phase (a HOLD from the BLE thread), so reset the consumer's state when
+recording stops. HOLD means calm after a movement, not aiming: a lowered bow at rest also reads HOLD,
+so check the tilt.
 
 `ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect. Its
 scans are filtered on the registered sensors, so they keep running with the screen off.
@@ -177,6 +194,23 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 (as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Changelog
+
+### 0.7.0
+
+Adds the raise, phase boundaries, a live phase and the release rotation. Source-compatible except an exhaustive `when` over `ShotPhase`, which needs a `RAISE` branch; **not binary-compatible** for code that calls the constructors of `DetectedShot` (constructor, `copy`), `BowMovementAnalyzer` (new parameters) or `ShotCycleDetector` (`onPhase` sits before `onShotDetected`): such code fails with `NoSuchMethodError` until recompiled. `detectPhases` is unchanged.
+
+- **New:** `ShotPhase.RAISE`, appended (`detectPhases` never emits it).
+- **New:** `BowMovementAnalyzer.shotBoundaries` returns `ShotBoundaries` (raise, draw, hold and release indices), with the constructor parameters `raiseMinTiltDeg`, `raiseEndTiltDeg`, `raisePauseMaxMs` and `raiseMaxMs` (6 s; a longer movement is bow handling). A raise's rest is a calm gyro over 100 ms, not one still sample. A raise across a link gap (over 1 s without samples) is unknown.
+- **New:** `DetectedShot` carries `raiseStartTimestamp`, `drawStartTimestamp`, `holdStartTimestamp` and `releaseTimestamp`, null by default; `ShotCycleDetector.RAISE_LEAD_MS` (1 s).
+- **New:** `ShotCycleDetector` `onPhase` reports a `LivePhase` once per change. It runs outside the lock, before `onShotDetected`, which runs even if `onPhase` throws. Deliveries from two threads may arrive out of order: after `flush` the detector is IDLE, but the last delivery may be an older HOLD, so reset the consumer's state when recording stops. HOLD means calm after movement, not aiming: a lowered bow at rest also reads HOLD.
+- **New:** `BowMovementAnalyzer.raiseEndTiltDeg` is public (10° by default), for callers checking that the bow is at the aim.
+- **New:** `BowMovementAnalyzer.releaseRotation` returns `ReleaseRotation` (amplitude, peak speed, stop time).
+- **Behaviour change:** `idleKeepMs` defaults to 6 s (was 2 s), enough for a raise and its pause. A raise too slow to read as a draw (under about 20°/s) must fit in it with its pause and the rest before it: a longer one reads unknown, and one within 1 s of that limit has its samples start at the buffer's start. A negative `idleKeepMs` throws `IllegalArgumentException`.
+- **Behaviour change:** a shot's samples start 1 s before its raise (`RAISE_LEAD_MS`), when one is found.
+- **Behaviour change:** `DetectedShot.equals`/`hashCode` include the boundary timestamps: two shots that differ only in their boundaries are no longer equal.
+- **Behaviour change:** re-analysis (`analyze`/`computeMetrics`, `ShotErrorClassifier.classify`, `samplesToTrace`) reads the aim's HOLD, the one before the release, not the first HOLD; `samplesToTrace` labels any other HOLD as IDLE.
+- **Behaviour change:** `DetectedWindow.drawStartMs` is now the shot's sample start (see `DetectionDiagnostics`).
+- `ShotCycleDetector`: with no release within `maxDrawMs`, detection restarts at the latest draw and keeps `idleKeepMs` before it, so the raise of the shot in progress stays and the live phase is unchanged; with no newer draw in the last `maxDrawMs`, all is dropped and the phase turns IDLE. A timestamp restart whose first sample moves reports DRAW with no IDLE first; at low rates a transient DRAW of up to `releaseWindowMs` can come before RELEASE.
 
 ### 0.6.1
 

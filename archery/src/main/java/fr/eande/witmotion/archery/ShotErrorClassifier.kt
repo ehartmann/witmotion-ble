@@ -40,7 +40,7 @@ public object ShotErrorClassifier {
     ): ClassificationResult {
         if (samples.size < 10) return ClassificationResult(ShotError.CLEAN, 0f, details = "Insufficient data")
 
-        val holdSegment = phases.find { it.phase == ShotPhase.HOLD }
+        val holdSegment = aimHold(phases)
         val releaseSegment = phases.find { it.phase == ShotPhase.RELEASE }
         val ftSegment = phases.find { it.phase == ShotPhase.FOLLOW_THROUGH }
 

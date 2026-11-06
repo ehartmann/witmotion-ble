@@ -12,7 +12,15 @@ public data class DetectionReport(
     val weakSpikes: List<Spike>
 )
 
-public data class DetectedWindow(val drawStartMs: Long, val releaseMs: Long, val endMs: Long)
+public data class DetectedWindow(
+    /**
+     * The shot's first sample, as [ShotCycleDetector.detectAll] emits it: [ShotCycleDetector.RAISE_LEAD_MS]
+     * before its raise when one is found, else the start of its last draw.
+     */
+    val drawStartMs: Long,
+    val releaseMs: Long,
+    val endMs: Long
+)
 
 /**
  * A draw that did not become a shot. [holdMs] and [holdMeanGyroDps] describe the longest hold of the
@@ -63,8 +71,8 @@ public data class Spike(val tMs: Long, val jumpG: Float)
  *
  * [afterReleaseMs] must equal the value passed to [ShotCycleDetector.detectAll] for `shots` to agree.
  *
- * Memory is the detector's buffer (at most `maxDrawMs` plus `afterReleaseMs` of samples) plus the
- * samples of the last 20 ms: nothing grows with the length of the recording but the report.
+ * Memory is the detector's buffer (at most `idleKeepMs`, `maxDrawMs` and `afterReleaseMs` of samples)
+ * plus the samples of the last 20 ms: nothing grows with the length of the recording but the report.
  */
 public object DetectionDiagnostics {
     public fun explain(
@@ -102,6 +110,12 @@ internal class DiagnosticsRun(
     private var spikeLastT = 0L
     private var spikeJump = 0f
     private var spikeOpen = false
+
+    // A stuck restart keeps samples before the latest draw that its drop already explained
+    private var explainedBefore = Long.MIN_VALUE
+
+    // The near misses from this index on come from the open window's stuck restarts
+    private var windowMisses = 0
 
     var peakBufferedSamples = 0
         private set
@@ -149,11 +163,18 @@ internal class DiagnosticsRun(
         // A spike before this release cannot fall in a later shot
         spikes.filterTo(weakSpikes) { it.tMs !in window.releaseMs..window.endMs }
         spikes.clear()
+        // A restart keeps samples before its latest draw, so it may have explained this shot's raise
+        nearMisses.subList(windowMisses, nearMisses.size).removeAll { it.drawStartMs >= window.drawStartMs }
         explainAttempts(buffer, phases, upTo = from, keepOpen = false, stuck = false)
+        explainedBefore = Long.MIN_VALUE
+        windowMisses = nearMisses.size
     }
 
     override fun dropped(buffer: List<ImuSample>, upTo: Int, stuck: Boolean) {
         explainAttempts(buffer, analyzer.detectPhases(buffer), upTo, keepOpen = true, stuck = stuck)
+        val restart = stuck && upTo < buffer.size
+        explainedBefore = if (restart) buffer[upTo].timestamp else Long.MIN_VALUE
+        if (!restart) windowMisses = nearMisses.size
     }
 
     private fun explainAttempts(
@@ -166,6 +187,7 @@ internal class DiagnosticsRun(
         var attempt: Attempt? = null
         for ((k, seg) in phases.withIndex()) {
             if (seg.startIndex >= upTo || seg.phase == ShotPhase.RELEASE || seg.phase == ShotPhase.FOLLOW_THROUGH) break
+            if (buffer[seg.startIndex].timestamp < explainedBefore) continue
             if (seg.phase == ShotPhase.DRAW && attempt == null) attempt = Attempt(seg.startIndex)
             if (seg.phase != ShotPhase.HOLD) continue
             val current = attempt ?: continue

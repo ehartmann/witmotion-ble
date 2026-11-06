@@ -3,6 +3,8 @@ package fr.eande.witmotion.archery
 import com.google.common.truth.Truth.assertThat
 import fr.eande.witmotion.ImuSample
 import org.junit.Test
+import kotlin.math.cos
+import kotlin.math.sin
 
 class DetectionDiagnosticsTest {
 
@@ -165,6 +167,53 @@ class DetectionDiagnosticsTest {
     }
 
     @Test
+    fun `a near miss in the samples a restart keeps before the latest draw is reported once`() {
+        val s = Stream().apply {
+            idle(); draw(700); feed(24_000, 6f); hold(1_000)   // handling starts the clock: NO_SPIKE
+            draw(); hold(1_000)                                // NO_SPIKE, 2 s before the latest draw
+            draw(); hold(2_000); release(); followThrough()    // the 30 s restart falls in this hold
+        }
+
+        val report = s.explain()
+
+        assertThat(report.shots).hasSize(1)
+        assertThat(report.nearMisses.map { it.drawStartMs }).containsExactly(200L, 25_900L).inOrder()
+        assertThat(report.nearMisses.map { it.reason }).containsExactly(Reason.NO_SPIKE, Reason.NO_SPIKE)
+    }
+
+    @Test
+    fun `the raise of a shot detected after a restart is not a near miss`() {
+        /** [ms] of 50 Hz samples from [start] at [gyro], gravity [tilt] degrees from the aim, given the ms into the stretch. */
+        fun stretch(start: Long, ms: Long, gyro: Float, tilt: (Long) -> Double = { 0.0 }) = (0 until ms step 20).map { dt ->
+            val rad = Math.toRadians(tilt(dt))
+            ImuSample(start + dt, gyroscope = floatArrayOf(gyro, 0f, 0f), acceleration = floatArrayOf(0f, sin(rad).toFloat(), cos(rad).toFloat()))
+        }
+        // Handling at 0 starts the clock; raise at 23 s, 1 s still, draw at 27 s: the 30 s restart falls in the draw
+        val samples = stretch(0, 700, 30f) { 60.0 } + stretch(700, 22_300, 0f) { 60.0 } +
+            stretch(23_000, 3_000, 25f) { dt -> 60.0 * (1 - dt / 3_000.0) } + stretch(26_000, 1_000, 0f) +
+            stretch(27_000, 2_000, 25f) + stretch(29_000, 3_000, 1f) +
+            ImuSample(32_000, gyroscope = floatArrayOf(1f, 0f, 0f), acceleration = JOLT) + stretch(32_020, 3_100, 2f)
+
+        val report = DetectionDiagnostics.explain(samples.asSequence())
+
+        assertThat(report.shots.single().drawStartMs).isEqualTo(22_000L)   // 1 s before the raise
+        assertThat(report.nearMisses.map { it.drawStartMs }).containsExactly(0L)
+    }
+
+    @Test
+    fun `a near miss before a clock restart stays when a shot follows at earlier timestamps`() {
+        val s = Stream().apply {
+            t = 100_000; idle(); draw(); hold(1_000); draw(300)   // NO_SPIKE
+            t = 0; shot()
+        }
+
+        val report = s.explain()
+
+        assertThat(report.shots).hasSize(1)
+        assertThat(report.nearMisses.map { it.drawStartMs }).containsExactly(100_200L)
+    }
+
+    @Test
     fun `shots agree with detectAll on a mixed stream of 2 shots and 3 near misses`() {
         val s = Stream().apply {
             idle(); draw(); hold(1_000); draw(300)                       // NO_SPIKE
@@ -228,7 +277,7 @@ class DetectionDiagnosticsTest {
         assertThat(report.shots).hasSize(90)
         assertThat(report.nearMisses).isEmpty()
         assertThat(run.peakBufferedSamples).isGreaterThan(0)
-        assertThat(run.peakBufferedSamples).isAtMost(1_000)
+        assertThat(run.peakBufferedSamples).isAtMost(1_400)   // 6 s kept before the draw, then 7 s of shot
     }
 
     private fun Stream.prematureRelease() {

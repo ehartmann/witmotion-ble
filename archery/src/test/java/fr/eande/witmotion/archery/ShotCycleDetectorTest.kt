@@ -3,6 +3,8 @@ package fr.eande.witmotion.archery
 import com.google.common.truth.Truth.assertThat
 import fr.eande.witmotion.ImuSample
 import org.junit.Test
+import kotlin.math.cos
+import kotlin.math.sin
 
 class ShotCycleDetectorTest {
 
@@ -44,6 +46,140 @@ class ShotCycleDetectorTest {
         feed(holdMs, 1f, stepMs)
         release(stepMs)
         feed(followMs, 2f, stepMs)
+    }
+
+    /** [ms] of 50 Hz samples from [start]: [gyro] °/s, gravity [tilt] degrees from the aim (+z), given the ms into the stretch. */
+    private fun stretch(start: Long, ms: Long, gyro: Float, tilt: (Long) -> Double = { 0.0 }) =
+        (0 until ms step 20).map { dt ->
+            val rad = Math.toRadians(tilt(dt))
+            ImuSample(start + dt, acceleration = floatArrayOf(0f, sin(rad).toFloat(), cos(rad).toFloat()), gyroscope = floatArrayOf(gyro, 0f, 0f))
+        }
+
+    /** From [start]: the bow rising 3 s from 60° off the aim, still [pauseMs], draw 2 s, hold 3 s, the release shock, 3.1 s of follow-through. */
+    private fun raiseToShot(start: Long, pauseMs: Long = 0): List<ImuSample> {
+        val draw = start + 3_000 + pauseMs
+        return stretch(start, 3_000, 25f) { dt -> 60.0 * (1 - dt / 3_000.0) } + stretch(start + 3_000, pauseMs, 0f) +
+            stretch(draw, 2_000, 25f) + stretch(draw + 2_000, 3_000, 1f) +
+            ImuSample(draw + 5_000, acceleration = floatArrayOf(3f, 0f, 1f), gyroscope = floatArrayOf(1f, 0f, 0f)) +
+            stretch(draw + 5_020, 3_100, 2f)
+    }
+
+    private fun detectRealistic(samples: List<ImuSample>, maxDrawMs: Long = 30_000): ShotCycleDetector.DetectedShot {
+        val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000, maxDrawMs = maxDrawMs)
+        samples.forEach(detector::onSample)
+        return detectedShots.single()
+    }
+
+    @Test
+    fun `a shot with a raise starts a second before it and carries its boundaries`() {
+        // ShotBoundariesTest's blended raise and draw, after 2 s at rest
+        val stream = stretch(0, 2_000, 0f) { 60.0 } + raiseToShot(2_000)
+        val b = BowMovementAnalyzer().shotBoundaries(stream)!!
+
+        val shot = detectRealistic(stream)
+
+        assertThat(shot.samples.first().timestamp).isEqualTo(2_000L - ShotCycleDetector.RAISE_LEAD_MS)
+        assertThat(listOf(shot.raiseStartTimestamp, shot.drawStartTimestamp, shot.holdStartTimestamp, shot.releaseTimestamp))
+            .containsExactlyElementsIn(listOf(b.raiseStartIndex!!, b.drawStartIndex, b.holdStartIndex, b.releaseIndex).map { stream[it].timestamp })
+            .inOrder()
+        assertThat(shot.raiseStartTimestamp).isEqualTo(2_000L)
+        assertThat(shot.drawStartTimestamp).isIn(4_500L..4_600L)
+        assertThat(shot.holdStartTimestamp).isEqualTo(7_000L)
+        assertThat(shot.releaseTimestamp).isEqualTo(10_000L)
+    }
+
+    @Test
+    fun `a raise, a pause, then a draw keeps the hold of the aim in the metrics, not the pause`() {
+        val shot = detectRealistic(stretch(0, 2_000, 0f) { 60.0 } + raiseToShot(2_000, pauseMs = 1_000))
+
+        assertThat(shot.samples.first().timestamp).isEqualTo(shot.raiseStartTimestamp!! - ShotCycleDetector.RAISE_LEAD_MS)
+        assertThat(shot.metrics!!.holdTimeMs).isEqualTo(2_980L)
+    }
+
+    @Test
+    fun `a stuck-draw restart keeps the raise of the shot in progress`() {
+        // The bow lowered at 0 starts the clock, rests 24 s, rises at 24.7 s: the 30 s restart falls in the hold
+        val stream = stretch(0, 700, 30f) { 60.0 } + stretch(700, 24_000, 0f) { 60.0 } + raiseToShot(24_700)
+
+        val shot = detectRealistic(stream)
+
+        assertThat(shot.raiseStartTimestamp).isEqualTo(24_700L)
+        assertThat(shot.samples.first().timestamp).isEqualTo(24_700L - ShotCycleDetector.RAISE_LEAD_MS)
+        assertThat(shot.drawStartTimestamp).isIn(27_200L..27_300L)
+        assertThat(shot.releaseTimestamp).isEqualTo(32_700L)
+    }
+
+    @Test
+    fun `a stuck-draw restart keeps exactly idleKeepMs before the latest draw and restarts the clock there`() {
+        // As above, but the bow is held at the aim with no release
+        val stream = stretch(0, 700, 30f) { 60.0 } + stretch(700, 24_000, 0f) { 60.0 } +
+            stretch(24_700, 3_000, 25f) { dt -> 60.0 * (1 - dt / 3_000.0) } + stretch(27_700, 2_000, 25f) + stretch(29_700, 31_000, 1f)
+        val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000)
+        val stuckDrops = mutableListOf<Long>()
+        detector.observer = object : ShotCycleDetector.Observer {
+            override fun shot(buffer: List<ImuSample>, from: Int) = Unit
+            override fun dropped(buffer: List<ImuSample>, upTo: Int, stuck: Boolean) { if (stuck) stuckDrops += buffer.last().timestamp }
+        }
+
+        stream.filter { it.timestamp <= 30_020 }.forEach(detector::onSample)
+        assertThat(detector.bufferedSamples).isEqualTo((30_020 - 18_700) / 20 + 1)   // from 24 700 - 6 000
+        stream.filter { it.timestamp > 30_020 }.forEach(detector::onSample)
+
+        // Restarted at 30 020; the clock then runs from the raise at 24 700, so all is dropped 30 s later
+        assertThat(stuckDrops).containsExactly(30_020L, 54_720L).inOrder()
+        assertThat(detectedShots).isEmpty()
+    }
+
+    @Test
+    fun `a window cut inside a raise by a clock reset has no raise and a draw start at the aim`() {
+        // The clock restarts from 0 halfway up the raise
+        val reset = stretch(1_000_000, 1_000, 0f) { 60.0 } + raiseToShot(-1_500).filter { it.timestamp >= 0 }
+
+        val shot = detectRealistic(reset, maxDrawMs = 9_000)
+
+        assertThat(shot.raiseStartTimestamp).isNull()
+        assertThat(shot.samples.first().timestamp).isEqualTo(0L)
+        assertThat(shot.drawStartTimestamp).isIn(1_000L..1_100L)
+    }
+
+    @Test
+    fun `a raise less than RAISE_LEAD_MS after the oldest sample starts the shot at that sample`() {
+        val shot = detectRealistic(stretch(0, 500, 0f) { 60.0 } + raiseToShot(500))
+
+        assertThat(shot.raiseStartTimestamp).isEqualTo(500L)
+        assertThat(shot.samples.first().timestamp).isEqualTo(0L)
+    }
+
+    @Test
+    fun `flush emits a shot cut short with its raise and boundaries`() {
+        val detector = detector(analyzer = BowMovementAnalyzer(), afterReleaseMs = 3_000)
+        (stretch(0, 2_000, 0f) { 60.0 } + raiseToShot(2_000)).filter { it.timestamp <= 11_000 }.forEach(detector::onSample)
+        assertThat(detectedShots).isEmpty()
+
+        detector.flush()
+
+        val shot = detectedShots.single()
+        assertThat(shot.samples.first().timestamp).isEqualTo(1_000L)
+        assertThat(listOf(shot.raiseStartTimestamp, shot.holdStartTimestamp, shot.releaseTimestamp))
+            .containsExactly(2_000L, 7_000L, 10_000L).inOrder()
+        assertThat(shot.drawStartTimestamp).isIn(4_500L..4_600L)
+    }
+
+    @Test
+    fun `a shot without a raise starts at its last draw as before`() {
+        val detector = detector()
+        detector.feed(200, 30f)                            // draw, let down
+        detector.feed(400, 1f)
+        val lastDrawAt = t
+        detector.shot()
+
+        val shot = detectedShots.single()
+        assertThat(shot.samples.first().timestamp).isEqualTo(lastDrawAt)
+        assertThat(shot.samples.last().timestamp).isEqualTo(lastDrawAt + 600 + 400)
+        assertThat(shot.raiseStartTimestamp).isNull()
+        assertThat(shot.drawStartTimestamp).isEqualTo(lastDrawAt)
+        assertThat(shot.holdStartTimestamp).isEqualTo(lastDrawAt + 200)
+        assertThat(shot.releaseTimestamp).isEqualTo(lastDrawAt + 600)
     }
 
     @Test
@@ -163,11 +299,19 @@ class ShotCycleDetectorTest {
     }
 
     @Test
+    fun `a negative idleKeepMs is rejected at construction`() {
+        val thrown = runCatching { ShotCycleDetector(idleKeepMs = -1) { } }.exceptionOrNull()
+
+        assertThat(thrown).isInstanceOf(IllegalArgumentException::class.java)
+        ShotCycleDetector(idleKeepMs = 0) { }
+    }
+
+    @Test
     fun `memory stays bounded while waiting for a draw`() {
         val detector = detector()
         detector.feed(600_000, 0f)                         // 10 minutes connected, at rest
 
-        assertThat(detector.bufferedSamples).isAtMost(2_000 / 20 + 1)
+        assertThat(detector.bufferedSamples).isEqualTo(6_000 / 20 + 1)    // the last 6 s, for a raise before the draw
     }
 
     @Test
