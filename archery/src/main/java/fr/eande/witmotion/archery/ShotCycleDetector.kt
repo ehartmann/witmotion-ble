@@ -104,12 +104,16 @@ public class ShotCycleDetector(
 
     public fun onSample(sample: ImuSample): Unit = locked { process(sample) }
 
-    /** Runs [step] under the lock, then the callbacks outside it. */
+    /** Runs [step] under the lock, then the callbacks outside it; the shot is delivered even if `onPhase` throws. */
     private inline fun locked(step: () -> DetectedShot?) {
         var phase: LivePhase? = null
         val shot = synchronized(lock) { step().also { phase = phaseChange() } }
-        phase?.let(onPhase)
-        shot?.let(onShotDetected)
+        // The shot has already left the buffer: it would be lost for good
+        try {
+            phase?.let(onPhase)
+        } finally {
+            shot?.let(onShotDetected)
+        }
     }
 
     /** The live phase to report, null when it did not change (a HOLD changes with its start too). */

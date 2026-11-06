@@ -5,6 +5,7 @@ import fr.eande.witmotion.ImuSample
 import fr.eande.witmotion.archery.ShotPhase.DRAW
 import fr.eande.witmotion.archery.ShotPhase.HOLD
 import fr.eande.witmotion.archery.ShotPhase.IDLE
+import fr.eande.witmotion.archery.ShotPhase.RELEASE
 import org.junit.Test
 
 class LivePhaseTest {
@@ -22,13 +23,27 @@ class LivePhaseTest {
         ImuSample(timestamp = time, gyroscope = floatArrayOf(gyro, 0f, 0f), acceleration = accel)
 
     /** [durationMs] of 50 Hz samples at [gyro] °/s. */
-    private fun feed(durationMs: Long, gyro: Float) {
+    private fun feed(durationMs: Long, gyro: Float, to: ShotCycleDetector = detector) {
         val end = t + durationMs
         while (t < end) {
-            detector.onSample(sample(t, gyro))
+            to.onSample(sample(t, gyro))
             t += 20
         }
     }
+
+    /** Draw 1 s, hold 3 s and the release shock, into [to]; returns the shock's timestamp. */
+    private fun drawHoldRelease(to: ShotCycleDetector): Long {
+        feed(1_000, 30f, to)
+        feed(3_000, 1f, to)
+        val spikeAt = t
+        to.onSample(sample(t, 1f, accel = floatArrayOf(3f, 0f, 1f)))
+        t += 20
+        return spikeAt
+    }
+
+    /** A detector that records both callbacks, in order, into [events]. */
+    private fun recorder(events: MutableList<Any>) =
+        ShotCycleDetector(afterReleaseMs = 3_000, onPhase = { events += it }) { events += it }
 
     @Test
     fun `HOLD is entered once the bow stayed calm for the minimum hold`() {
@@ -66,8 +81,60 @@ class LivePhaseTest {
 
         val afterHold = reports[reports.indexOfLast { it.live.phase == HOLD } + 1]
         assertThat(afterHold.at - spikeAt).isAtMost(300L)
-        assertThat(afterHold.live.phase).isNotEqualTo(HOLD)
+        assertThat(afterHold.live).isEqualTo(LivePhase(RELEASE, spikeAt))
         assertThat(reports.last()).isEqualTo(Report(spikeAt + 3_000, LivePhase(IDLE, spikeAt + 3_000)))
+    }
+
+    @Test
+    fun `on the sample that emits a shot, onPhase reports IDLE before onShotDetected`() {
+        val events = mutableListOf<Any>()
+        val both = recorder(events)
+        val spikeAt = drawHoldRelease(both)
+        feed(3_000, 2f, both)   // ends with the sample that emits the shot
+
+        assertThat(events.last()).isInstanceOf(ShotCycleDetector.DetectedShot::class.java)
+        assertThat(events[events.size - 2]).isEqualTo(LivePhase(IDLE, spikeAt + 3_000))
+    }
+
+    @Test
+    fun `an onPhase that throws still delivers the shot of the same sample`() {
+        val shots = mutableListOf<ShotCycleDetector.DetectedShot>()
+        val throwing = ShotCycleDetector(afterReleaseMs = 3_000, onPhase = { if (it.phase == IDLE) error("cue failed") }) { shots += it }
+        drawHoldRelease(throwing)
+
+        val thrown = runCatching { feed(3_000, 2f, throwing) }.exceptionOrNull()
+
+        assertThat(thrown).hasMessageThat().isEqualTo("cue failed")
+        assertThat(shots).hasSize(1)
+    }
+
+    @Test
+    fun `flush after a HOLD with no release delivers IDLE`() {
+        val events = mutableListOf<Any>()
+        val both = recorder(events)
+        feed(1_000, 30f, both)
+        feed(3_000, 1f, both)
+        assertThat((events.last() as LivePhase).phase).isEqualTo(HOLD)
+
+        both.flush()
+
+        assertThat(events.last()).isEqualTo(LivePhase(IDLE, t - 20))
+    }
+
+    @Test
+    fun `flush after a release delivers IDLE, then the shot`() {
+        val events = mutableListOf<Any>()
+        val both = recorder(events)
+        drawHoldRelease(both)
+        feed(500, 2f, both)
+        val before = events.size
+
+        both.flush()
+
+        val flushed = events.drop(before)
+        assertThat(flushed).hasSize(2)
+        assertThat(flushed[0]).isEqualTo(LivePhase(IDLE, t - 20))
+        assertThat(flushed[1]).isInstanceOf(ShotCycleDetector.DetectedShot::class.java)
     }
 
     @Test
