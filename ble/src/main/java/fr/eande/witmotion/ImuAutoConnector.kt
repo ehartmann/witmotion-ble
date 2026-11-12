@@ -121,7 +121,8 @@ public class ImuAutoConnector internal constructor(
      * Single scan-and-connect attempt against registered devices: the first one found, or with
      * [onlyIfSingle] the only one that answered during the whole scan (none when several did).
      * True once the link is up; false when nothing was found or the connect failed or took
-     * more than [CONNECT_TIMEOUT_MS].
+     * more than [CONNECT_TIMEOUT_MS]. A link up or being set up is never replaced: the attempt then connects nothing and
+     * returns whether the link is up.
      */
     private suspend fun attemptConnect(onlyIfSingle: Boolean = false): Boolean {
         if (sensorManager.isConnected()) return true
@@ -131,7 +132,7 @@ public class ImuAutoConnector internal constructor(
         val chosen = CompletableDeferred<Unit>()
         val found = linkedMapOf<String, ImuSensorDevice>()
         sensorManager.onDeviceDiscovered = { device ->
-            if (!connecting && store.isRegistered(device.address)) {
+            if (!connecting && !linkBusy() && store.isRegistered(device.address)) {
                 if (onlyIfSingle) {
                     found[device.address] = device
                 } else {
@@ -148,13 +149,17 @@ public class ImuAutoConnector internal constructor(
             sensorManager.onDeviceDiscovered = null
             if (onlyIfSingle) {
                 found.values.singleOrNull()?.let { device ->
+                    if (linkBusy()) {
+                        Log.d(TAG, "A link came up during the scan: not connecting")
+                        return sensorManager.isConnected()
+                    }
                     connecting = true
                     Log.d(TAG, "Only registered device found: ${device.name} (${device.address})")
                     sensorManager.stopScan()
                     sensorManager.connect(device)
                 } ?: Log.d(TAG, "${found.size} registered devices found: not choosing")
             }
-            if (!connecting) return false
+            if (!connecting) return sensorManager.isConnected()
             return withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
                 sensorManager.connectionState.first { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
             } == ConnectionState.CONNECTED
@@ -163,6 +168,10 @@ public class ImuAutoConnector internal constructor(
             sensorManager.stopScan()
         }
     }
+
+    /** A link up or being set up: a direct connect would close it. A pending connect that still waits may be replaced. */
+    private fun linkBusy(): Boolean =
+        sensorManager.isConnected() || (sensorManager.isConnecting() && !sensorManager.pendingConnectWaiting)
 
     /**
      * One scan-and-connect attempt, unless connected or connecting; an attempt already in flight (a reconnect

@@ -196,6 +196,91 @@ class ImuAutoConnectorTest {
     }
 
     @Test
+    fun `tryAutoConnect onlyIfSingle does not replace a link that came up or is being set up during its scan`() = runTest {
+        var up = false
+        var settingUp = false
+        every { sensorManager.isConnected() } answers { up }
+        every { sensorManager.isConnecting() } answers { settingUp }
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.tryAutoConnect(onlyIfSingle = true)
+        runCurrent()
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        up = true
+        advanceTimeBy(6_000)
+        runCurrent()
+        verify(exactly = 0) { sensorManager.connect(any()) }
+
+        up = false
+        connector.tryAutoConnect(onlyIfSingle = true)
+        runCurrent()
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        settingUp = true
+        pendingWaiting = false
+        advanceTimeBy(6_000)
+        runCurrent()
+        verify(exactly = 0) { sensorManager.connect(any()) }
+    }
+
+    @Test
+    fun `tryAutoConnect onlyIfSingle may replace a pending connect that still waits`() = runTest {
+        var connecting = false
+        every { sensorManager.isConnected() } returns false
+        every { sensorManager.isConnecting() } answers { connecting }
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.tryAutoConnect(onlyIfSingle = true)
+        runCurrent()
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        connecting = true
+        pendingWaiting = true
+        advanceTimeBy(6_000)
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.connect(match { it.address == "AA:BB:CC:DD:EE:FF" }) }
+    }
+
+    @Test
+    fun `a retry does not connect over a link that came up before its device was seen`() = runTest {
+        var up = false
+        every { sensorManager.isConnected() } answers { up }
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.retryAfterUnexpectedDisconnect()
+        runCurrent()
+        up = true
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        runCurrent()
+
+        verify(exactly = 0) { sensorManager.connect(any()) }
+    }
+
+    @Test
+    fun `a retry whose last attempt sees its device while a link came up succeeds, not exhausted`() = runTest {
+        var up = false
+        every { sensorManager.isConnected() } answers { up }
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+        val events = mutableListOf<ImuAutoConnector.ReconnectEvent>()
+        backgroundScope.launch { connector.reconnectEvents.collect { events.add(it) } }
+
+        connector.retryAfterUnexpectedDisconnect()
+        advanceTimeBy(19_500) // attempts 1 and 2 (5 s scans, 3 s and 6 s back-offs) found nothing; attempt 3 is scanning
+        runCurrent()
+        up = true
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        advanceTimeBy(fullRetrySequenceMs)
+        runCurrent()
+
+        verify(exactly = 3) { sensorManager.startScan(any()) }
+        verify(exactly = 0) { sensorManager.connect(any()) }
+        assertThat(events).containsExactly(ImuAutoConnector.ReconnectEvent.Started, ImuAutoConnector.ReconnectEvent.Succeeded).inOrder()
+    }
+
+    @Test
     fun `tryAutoConnect onlyIfSingle does not pick between two registered devices`() = runTest {
         every { sensorManager.isConnected() } returns false
         store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
