@@ -259,6 +259,28 @@ class ImuAutoConnectorTest {
     }
 
     @Test
+    fun `a retry whose last attempt sees its device while a link came up succeeds, not exhausted`() = runTest {
+        var up = false
+        every { sensorManager.isConnected() } answers { up }
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+        val events = mutableListOf<ImuAutoConnector.ReconnectEvent>()
+        backgroundScope.launch { connector.reconnectEvents.collect { events.add(it) } }
+
+        connector.retryAfterUnexpectedDisconnect()
+        advanceTimeBy(19_500) // attempts 1 and 2 (5 s scans, 3 s and 6 s back-offs) found nothing; attempt 3 is scanning
+        runCurrent()
+        up = true
+        onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
+        advanceTimeBy(fullRetrySequenceMs)
+        runCurrent()
+
+        verify(exactly = 3) { sensorManager.startScan(any()) }
+        verify(exactly = 0) { sensorManager.connect(any()) }
+        assertThat(events).containsExactly(ImuAutoConnector.ReconnectEvent.Started, ImuAutoConnector.ReconnectEvent.Succeeded).inOrder()
+    }
+
+    @Test
     fun `tryAutoConnect onlyIfSingle does not pick between two registered devices`() = runTest {
         every { sensorManager.isConnected() } returns false
         store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")

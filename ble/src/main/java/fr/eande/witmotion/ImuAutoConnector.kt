@@ -121,10 +121,11 @@ public class ImuAutoConnector internal constructor(
      * Single scan-and-connect attempt against registered devices: the first one found, or with
      * [onlyIfSingle] the only one that answered during the whole scan (none when several did).
      * True once the link is up; false when nothing was found or the connect failed or took
-     * more than [CONNECT_TIMEOUT_MS]. A link that comes up, or starts being set up, during the scan is never replaced.
+     * more than [CONNECT_TIMEOUT_MS]. A link up or being set up is never replaced: the attempt then connects nothing and
+     * returns whether the link is up.
      */
     private suspend fun attemptConnect(onlyIfSingle: Boolean = false): Boolean {
-        if (sensorManager.isConnected()) return true
+        if (linkBusy()) return sensorManager.isConnected()
         if (store.getAll().isEmpty()) return false
 
         var connecting = false
@@ -158,7 +159,7 @@ public class ImuAutoConnector internal constructor(
                     sensorManager.connect(device)
                 } ?: Log.d(TAG, "${found.size} registered devices found: not choosing")
             }
-            if (!connecting) return false
+            if (!connecting) return sensorManager.isConnected()
             return withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
                 sensorManager.connectionState.first { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
             } == ConnectionState.CONNECTED
