@@ -47,6 +47,7 @@ class ImuAutoConnectorTest {
     private lateinit var unexpectedDisconnects: MutableSharedFlow<LinkDrop>
     private val connectionState = MutableStateFlow(ImuSensorManager.ConnectionState.DISCONNECTED)
     private val connectedDevice = MutableStateFlow<ImuSensorDevice?>(null)
+    private var pendingWaiting = true
     private val kept = "DD:55:8A:E4:85:B9"
     private val onDeviceDiscoveredSlot = slot<(ImuSensorDevice) -> Unit>()
 
@@ -66,6 +67,7 @@ class ImuAutoConnectorTest {
             every { unexpectedDisconnects } returns this@ImuAutoConnectorTest.unexpectedDisconnects
             every { onDeviceDiscovered = capture(onDeviceDiscoveredSlot) } just Runs
             every { connectionState } returns this@ImuAutoConnectorTest.connectionState
+            every { pendingConnectWaiting } answers { pendingWaiting }
             every { connectedDevice } returns this@ImuAutoConnectorTest.connectedDevice
             every { connectByAddress(any(), any(), any()) } answers {
                 this@ImuAutoConnectorTest.connectionState.value = ImuSensorManager.ConnectionState.CONNECTING
@@ -406,10 +408,13 @@ class ImuAutoConnectorTest {
         unexpectedDisconnects.emit(drop)
         runCurrent()
 
-        repeat(10) {
+        repeat(10) { i ->
             connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
             runCurrent()
-            advanceTimeBy(ImuAutoConnector.KEEP_RETRY_MS)
+            advanceTimeBy(ImuAutoConnector.KEEP_RETRY_MS - 1)
+            runCurrent()
+            verify(exactly = i + 1) { sensorManager.connectByAddress(kept, "WT9011DCL", true) }
+            advanceTimeBy(1)
             runCurrent()
         }
 
@@ -512,5 +517,77 @@ class ImuAutoConnectorTest {
         runCurrent()
 
         verify(exactly = 0) { sensorManager.startScan(any()) }
+    }
+
+    @Test
+    fun `a renewal falling during GATT setup issues no new connect`() = runTest {
+        keeping()
+        runCurrent()
+        unexpectedDisconnects.emit(drop)
+        runCurrent()
+
+        pendingWaiting = false
+        advanceTimeBy(61_000)
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.connectByAddress(kept, "WT9011DCL", true) }
+    }
+
+    @Test
+    fun `a link that came up by another path during the back-off is not replaced`() = runTest {
+        val (_, events) = keeping()
+        runCurrent()
+        unexpectedDisconnects.emit(drop)
+        runCurrent()
+        connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
+        runCurrent()
+
+        every { sensorManager.isConnected() } returns true
+        advanceTimeBy(ImuAutoConnector.KEEP_RETRY_MS)
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.connectByAddress(any(), any(), any()) }
+        assertThat(events).containsExactly(
+            ImuAutoConnector.ReconnectEvent.Started,
+            ImuAutoConnector.ReconnectEvent.Succeeded
+        ).inOrder()
+    }
+
+    @Test
+    fun `keep with no link is renewed every 30 s, with no Started`() = runTest {
+        every { sensorManager.isConnected() } returns false
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+        val events = mutableListOf<ImuAutoConnector.ReconnectEvent>()
+        backgroundScope.launch { connector.reconnectEvents.collect { events.add(it) } }
+
+        connector.keep(kept, "WT9011DCL")
+        advanceTimeBy(61_000)
+        runCurrent()
+
+        verify(exactly = 3) { sensorManager.connectByAddress(kept, "WT9011DCL", true) }
+        assertThat(events).isEmpty()
+    }
+
+    @Test
+    fun `stopKeeping with nothing kept cancels no pending connect`() = runTest {
+        val connector = ImuAutoConnector(sensorManager, store, backgroundScope)
+
+        connector.stopKeeping()
+
+        verify(exactly = 0) { sensorManager.cancelPendingConnect() }
+    }
+
+    @Test
+    fun `after stopKeeping a drop goes through the scan-based retry again`() = runTest {
+        store.register("AA:BB:CC:DD:EE:FF", "WT9011DCL")
+        val (connector, _) = keeping()
+        runCurrent()
+        connector.stopKeeping()
+
+        unexpectedDisconnects.emit(drop)
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.startScan(any()) }
+        verify(exactly = 0) { sensorManager.connectByAddress(any(), any(), any()) }
     }
 }

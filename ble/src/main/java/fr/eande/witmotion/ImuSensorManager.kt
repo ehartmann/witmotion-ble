@@ -490,6 +490,9 @@ public class ImuSensorManager(private val context: Context) {
         open(ImuSensorDevice(address = address, name = name), pending)
     }
 
+    /** True while the last pending connect still waits for the sensor, before the link comes up. */
+    internal val pendingConnectWaiting: Boolean get() = pendingConnect
+
     /** Ends the last connect if it is a pending one; true when it did. */
     internal fun cancelPendingConnect(): Boolean {
         if (!pendingConnect) return false

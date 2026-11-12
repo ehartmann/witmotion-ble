@@ -104,7 +104,7 @@ last delivery may be an older phase (a HOLD from the BLE thread), so reset the c
 recording stops. HOLD means calm after a movement, not aiming: a lowered bow at rest also reads HOLD,
 so check the tilt.
 
-`ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect. Its
+`ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect, unless `keep` is active: then it issues pending connects to the kept sensor without limit, and `reconnectEvents` reports `Started` on each drop and `Succeeded` when the link is back, never `Exhausted`. Its
 scans are filtered on the registered sensors, so they keep running with the screen off.
 
 The app requests the runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on

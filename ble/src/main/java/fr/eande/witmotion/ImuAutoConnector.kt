@@ -21,6 +21,7 @@ import fr.eande.witmotion.ImuSensorManager.ConnectionState
  * watches [ImuSensorManager.unexpectedDisconnects] for the whole app lifetime (a process
  * singleton held by WitnessApp, like [ImuSensorManager] itself) and retries with [retryAfterUnexpectedDisconnect]
  * when the sensor drops mid-session instead of leaving it disconnected until the app restarts.
+ * While [keep] is active, that scan-based retry is replaced by unlimited pending connects to the kept sensor.
  */
 public class ImuAutoConnector(
     private val sensorManager: ImuSensorManager,
@@ -56,13 +57,18 @@ public class ImuAutoConnector(
     @Volatile private var retryExhausted = false
 
     private val _reconnectEvents = MutableSharedFlow<ReconnectEvent>(extraBufferCapacity = 1)
+    /**
+     * Mid-session reconnect progress. While keeping ([keep]): [ReconnectEvent.Started] on each drop,
+     * [ReconnectEvent.Succeeded] when the link is back, never [ReconnectEvent.Exhausted].
+     */
     public val reconnectEvents: SharedFlow<ReconnectEvent> = _reconnectEvents.asSharedFlow()
 
     init {
         // shortcut: one collector for the process lifetime since WitnessApp creates this class
         // once — revisit only if ImuAutoConnector ever stops being a singleton.
         scope.launch {
-            // never suspends, so the manager's one-slot buffer cannot drop an emission
+            // the manager's one-slot buffer is shared by all collectors: a second drop of a burst can be lost to a
+            // slow one, which is harmless here because the keeper reacts the same way to any drop
             sensorManager.unexpectedDisconnects.collect {
                 if (kept != null) startKeepLoop(announce = true) else retryAfterUnexpectedDisconnect()
             }
@@ -192,10 +198,11 @@ public class ImuAutoConnector(
 
     /** Stops keeping and cancels the keeper's own pending connect; a link that is up stays up. */
     public fun stopKeeping() {
+        val wasKeeping = kept != null
         kept = null
         keepJob?.cancel()
         keepJob = null
-        sensorManager.cancelPendingConnect()
+        if (wasKeeping) sensorManager.cancelPendingConnect()
     }
 
     private fun startKeepLoop(announce: Boolean) {
@@ -203,18 +210,26 @@ public class ImuAutoConnector(
         keepJob = scope.launch {
             if (announce) _reconnectEvents.emit(ReconnectEvent.Started)
             while (true) {
+                if (sensorManager.isConnected()) {
+                    if (announce) _reconnectEvents.emit(ReconnectEvent.Succeeded)
+                    return@launch
+                }
                 val target = kept ?: return@launch
                 sensorManager.connectByAddress(target.address, target.name, pending = true)
-                val state = withTimeoutOrNull(KEEP_RENEW_MS) {
-                    sensorManager.connectionState.first { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
-                }
-                when (state) {
-                    ConnectionState.CONNECTED -> {
-                        if (announce) _reconnectEvents.emit(ReconnectEvent.Succeeded)
-                        return@launch
+                var renew = false
+                while (!renew) {
+                    val state = withTimeoutOrNull(KEEP_RENEW_MS) {
+                        sensorManager.connectionState.first { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
                     }
-                    ConnectionState.DISCONNECTED -> delay(KEEP_RETRY_MS)
-                    else -> Unit
+                    when (state) {
+                        ConnectionState.CONNECTED -> {
+                            if (announce) _reconnectEvents.emit(ReconnectEvent.Succeeded)
+                            return@launch
+                        }
+                        ConnectionState.DISCONNECTED -> { delay(KEEP_RETRY_MS); renew = true }
+                        // past the pending request, the manager's own 20 s watchdog bounds the wait
+                        else -> renew = sensorManager.pendingConnectWaiting
+                    }
                 }
             }
         }
