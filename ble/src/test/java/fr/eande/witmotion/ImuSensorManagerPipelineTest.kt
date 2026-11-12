@@ -484,16 +484,54 @@ class ImuSensorManagerPipelineTest {
     }
 
     @Test
-    fun `disconnect() and a new connect() stop the watchdog`() {
+    fun `disconnect() stops the watchdog, even while a probe is pending`() {
+        val drops = streamDrops()
         connectedWithOneSample()
-        h.manager.disconnect()
-        h.idle(3_000)
-        verify(exactly = 0) { h.gatt.readDescriptor(h.cccd) }
+        h.idle(1_500)
+        verify { h.gatt.readDescriptor(h.cccd) }
 
+        clearMocks(h.gatt, answers = false)
+        h.manager.disconnect()
+        h.injectGatt()
+        h.idle(3_000)
+
+        assertThat(drops).isEmpty()
+        verify(exactly = 1) { h.gatt.disconnect() }
+    }
+
+    @Test
+    fun `a new connect() stops the watchdog`() {
         connectedWithOneSample()
         h.manager.connect(device)
+        h.injectGatt()
+        h.connect()
         h.idle(3_000)
+
         verify(exactly = 0) { h.gatt.readDescriptor(h.cccd) }
+    }
+
+    @Test
+    fun `a notification landing just after connect() does not start a watchdog on the new link`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+        h.manager.connect(device)
+        h.injectGatt()
+        h.notify(GattHarness.frame())
+        h.idle(2_500)
+
+        assertThat(drops).isEmpty()
+        verify(exactly = 0) { h.gatt.readDescriptor(h.cccd) }
+    }
+
+    @Test
+    fun `a probe the stack fails is LINK_LOST, not STREAM_SILENT`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+        h.idle(1_500)
+
+        h.descriptorRead(status = 133)
+
+        assertThat(drops.single().cause).isEqualTo(DropCause.LINK_LOST)
     }
 
     @Test

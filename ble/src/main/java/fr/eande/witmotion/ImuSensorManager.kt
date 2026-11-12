@@ -208,7 +208,7 @@ public class ImuSensorManager(private val context: Context) {
         override fun run() {
             val g = gatt
             val cccd = notifyCccd
-            if (g == null || cccd == null) {
+            if (g == null || cccd == null || _connectionState.value != ConnectionState.CONNECTED) {
                 streamWatched = false
                 return
             }
@@ -234,6 +234,7 @@ public class ImuSensorManager(private val context: Context) {
     }
 
     private fun stopStreamWatch() {
+        notifyCccd = null
         streamWatched = false
         mainHandler.removeCallbacks(streamWatchdog)
         mainHandler.removeCallbacks(probeTimeout)
@@ -564,9 +565,9 @@ public class ImuSensorManager(private val context: Context) {
             Log.d(TAG, "High connection priority requested: $fast")
 
             writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID)
-            notifyCccd = cccd
 
             gattOps.clear()
+            notifyCccd = cccd
             gatt.setCharacteristicNotification(notifyChar, true)
             gattOps.enqueue(gatt) { g ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -593,17 +594,17 @@ public class ImuSensorManager(private val context: Context) {
         }
 
         @Deprecated("Deprecated in API 33+, kept for backward compatibility with minSdk 26")
-        override fun onDescriptorRead(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) = probeAnswered(gatt)
+        override fun onDescriptorRead(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) = probeAnswered(gatt, status)
 
         @RequiresApi(Build.VERSION_CODES.TIRAMISU)
         override fun onDescriptorRead(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int, value: ByteArray) =
-            probeAnswered(gatt)
+            probeAnswered(gatt, status)
 
         /** The link answers while no sample comes: the sensor's stream is silent, not the link lost. */
-        private fun probeAnswered(gatt: BluetoothGatt) {
+        private fun probeAnswered(gatt: BluetoothGatt, status: Int) {
             if (this@ImuSensorManager.gatt != gatt) return
             gattOps.next(gatt)
-            dropLink(gatt, DropCause.STREAM_SILENT)
+            dropLink(gatt, if (status == BluetoothGatt.GATT_SUCCESS) DropCause.STREAM_SILENT else DropCause.LINK_LOST)
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
