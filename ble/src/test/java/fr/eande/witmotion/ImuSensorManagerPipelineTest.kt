@@ -8,6 +8,7 @@ import android.content.Context
 import android.os.SystemClock
 import com.google.common.truth.Truth.assertThat
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothProfile
 import io.mockk.Runs
 import io.mockk.clearMocks
 import org.robolectric.shadows.ShadowLog
@@ -29,6 +30,7 @@ import org.robolectric.RobolectricTestRunner
 class ImuSensorManagerPipelineTest {
 
     private val h = GattHarness()
+    private val dropped = mutableListOf<LinkDrop>()
 
     private fun hex(bytes: ByteArray) = bytes.joinToString(" ") { "%02X".format(it) }
 
@@ -184,7 +186,7 @@ class ImuSensorManagerPipelineTest {
 
     private fun CoroutineScope.countDrops(manager: ImuSensorManager): () -> Int {
         var drops = 0
-        launch { manager.unexpectedDisconnects.collect { drops++ } }
+        launch { manager.unexpectedDisconnects.collect { drops++; dropped += it } }
         return { drops }
     }
 
@@ -216,7 +218,7 @@ class ImuSensorManagerPipelineTest {
         assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTING)
         h.notify(GattHarness.frame())
         h.drain()
-        h.idle(30_000)
+        h.stream(30_000)
 
         assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
         assertThat(h.manager.connectedDevice.value).isNotNull()
@@ -341,7 +343,40 @@ class ImuSensorManagerPipelineTest {
 
         assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
         assertThat(drops()).isEqualTo(1)
+        assertThat(dropped.single().cause).isEqualTo(DropCause.LINK_LOST)
+        assertThat(dropped.single().lastSampleAt).isNull()
         verify { h.gatt.disconnect() }
+        scope.cancel()
+    }
+
+    @Test
+    fun `a drop the stack reports is LINK_LOST with the link's address and last sample time`() {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val drops = mutableListOf<LinkDrop>()
+        scope.launch { h.manager.unexpectedDisconnects.collect { drops += it } }
+        h.connect()
+        h.notify(GattHarness.frame(1))
+        h.notify(GattHarness.frame(2))
+
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+
+        assertThat(drops).containsExactly(LinkDrop("AA:BB:CC:DD:EE:FF", DropCause.LINK_LOST, h.manager.lastSample.value!!.timestamp))
+        scope.cancel()
+    }
+
+    @Test
+    fun `a disconnect() emits no drop`() {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val drops = mutableListOf<LinkDrop>()
+        scope.launch { h.manager.unexpectedDisconnects.collect { drops += it } }
+        h.manager.connect(device)
+        h.injectGatt()
+        h.connect()
+
+        h.manager.disconnect()
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 0, BluetoothProfile.STATE_DISCONNECTED)
+
+        assertThat(drops).isEmpty()
         scope.cancel()
     }
 
@@ -354,10 +389,175 @@ class ImuSensorManagerPipelineTest {
         h.connect()
         h.notify(GattHarness.frame())
 
-        h.idle(30_000)
+        h.stream(30_000)
 
         assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTED)
         assertThat(drops()).isEqualTo(0)
         scope.cancel()
+    }
+
+    private fun streamDrops(): MutableList<LinkDrop> {
+        val drops = mutableListOf<LinkDrop>()
+        CoroutineScope(Dispatchers.Unconfined).launch { h.manager.unexpectedDisconnects.collect { drops += it } }
+        return drops
+    }
+
+    private fun connectedWithOneSample() {
+        h.manager.connect(device)
+        h.injectGatt()
+        h.connect()
+        h.notify(GattHarness.frame())
+    }
+
+    @Test
+    fun `no sample for 1,5 s and the probe answered is STREAM_SILENT`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+
+        h.idle(1_250)
+        verify(exactly = 0) { h.gatt.readDescriptor(h.cccd) }
+        h.idle(250)
+        verify { h.gatt.readDescriptor(h.cccd) }
+        h.descriptorRead()
+
+        assertThat(drops.single().cause).isEqualTo(DropCause.STREAM_SILENT)
+    }
+
+    @Test
+    fun `a probe unanswered within 1 s is LINK_LOST`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+
+        h.idle(1_500)
+        verify { h.gatt.readDescriptor(h.cccd) }
+        h.idle(1_000)
+
+        assertThat(drops.single().cause).isEqualTo(DropCause.LINK_LOST)
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+    }
+
+    @Test
+    fun `a probe that cannot start drops the link at once`() {
+        every { h.gatt.readDescriptor(h.cccd) } returns false
+        val drops = streamDrops()
+        connectedWithOneSample()
+
+        h.idle(1_250)
+        assertThat(drops).isEmpty()
+        h.idle(250)
+
+        assertThat(drops.single().cause).isEqualTo(DropCause.LINK_LOST)
+    }
+
+    @Test
+    fun `register replies alone do not keep the watchdog quiet`() {
+        connectedWithOneSample()
+
+        repeat(8) {
+            h.notify(GattHarness.registerReply(0x64, 400))
+            h.idle(200)
+        }
+
+        verify { h.gatt.readDescriptor(h.cccd) }
+    }
+
+    @Test
+    fun `samples every 100 ms keep the link`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+
+        h.stream(3_000)
+
+        verify(exactly = 0) { h.gatt.readDescriptor(h.cccd) }
+        assertThat(drops).isEmpty()
+    }
+
+    @Test
+    fun `no watchdog before the first sample`() {
+        h.manager.connect(device)
+        h.injectGatt()
+        h.connect()
+
+        h.idle(4_000)
+
+        verify(exactly = 0) { h.gatt.readDescriptor(h.cccd) }
+    }
+
+    @Test
+    fun `disconnect() stops the watchdog, even while a probe is pending`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+        h.idle(1_500)
+        verify { h.gatt.readDescriptor(h.cccd) }
+
+        clearMocks(h.gatt, answers = false)
+        h.manager.disconnect()
+        h.injectGatt()
+        h.idle(3_000)
+
+        assertThat(drops).isEmpty()
+        verify(exactly = 1) { h.gatt.disconnect() }
+    }
+
+    @Test
+    fun `a new connect() stops the watchdog`() {
+        connectedWithOneSample()
+        h.manager.connect(device)
+        h.injectGatt()
+        h.connect()
+        h.idle(3_000)
+
+        verify(exactly = 0) { h.gatt.readDescriptor(h.cccd) }
+    }
+
+    @Test
+    fun `a probe pending when connect() starts does not drop the new link`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+        h.idle(1_500)
+        verify { h.gatt.readDescriptor(h.cccd) }
+
+        h.manager.connect(device)
+        h.injectGatt()
+        h.idle(1_500)
+
+        assertThat(drops).isEmpty()
+    }
+
+    @Test
+    fun `a notification landing just after connect() does not start a watchdog on the new link`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+        h.manager.connect(device)
+        h.injectGatt()
+        h.notify(GattHarness.frame())
+        h.idle(2_500)
+
+        assertThat(drops).isEmpty()
+        verify(exactly = 0) { h.gatt.readDescriptor(h.cccd) }
+    }
+
+    @Test
+    fun `a probe the stack fails is LINK_LOST, not STREAM_SILENT`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+        h.idle(1_500)
+
+        h.descriptorRead(status = 133)
+
+        assertThat(drops.single().cause).isEqualTo(DropCause.LINK_LOST)
+    }
+
+    @Test
+    fun `a stack drop while probing gives one drop`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+        h.idle(1_500)
+        verify { h.gatt.readDescriptor(h.cccd) }
+
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 0, BluetoothProfile.STATE_DISCONNECTED)
+        h.idle(1_000)
+
+        assertThat(drops).hasSize(1)
     }
 }

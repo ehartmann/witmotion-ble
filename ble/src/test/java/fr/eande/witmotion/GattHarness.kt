@@ -30,6 +30,7 @@ internal class GattHarness(val manager: ImuSensorManager = ImuSensorManager(Runt
     private var completed = 0
 
     init {
+        every { gatt.device.address } returns "AA:BB:CC:DD:EE:FF"
         val service = mockk<BluetoothGattService>()
         every { service.getCharacteristic(ImuSensorManager.WRITE_CHAR_UUID) } returns writeChar
         every { service.getCharacteristic(ImuSensorManager.NOTIFY_CHAR_UUID) } returns notifyChar
@@ -38,6 +39,7 @@ internal class GattHarness(val manager: ImuSensorManager = ImuSensorManager(Runt
         every { gatt.getService(ImuSensorManager.SERVICE_UUID) } returns service
         every { gatt.writeDescriptor(cccd, any<ByteArray>()) } returns BluetoothStatusCodes.SUCCESS
         every { gatt.writeDescriptor(cccd) } returns true
+        every { gatt.readDescriptor(cccd) } returns true
         every { gatt.writeCharacteristic(writeChar, any<ByteArray>(), any()) } answers {
             record(secondArg())
             BluetoothStatusCodes.SUCCESS
@@ -67,6 +69,12 @@ internal class GattHarness(val manager: ImuSensorManager = ImuSensorManager(Runt
 
     fun idle(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
 
+    /** One frame every 100 ms for [ms]: a sensor that keeps streaming. */
+    fun stream(ms: Long) = repeat((ms / 100).toInt()) {
+        idle(100)
+        notify(frame(it))
+    }
+
     /** Link up and services found. */
     fun discoverServices() {
         manager.gattCallback.onConnectionStateChange(gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
@@ -74,6 +82,9 @@ internal class GattHarness(val manager: ImuSensorManager = ImuSensorManager(Runt
     }
 
     fun descriptorWritten(status: Int = BluetoothGatt.GATT_SUCCESS) = manager.gattCallback.onDescriptorWrite(gatt, cccd, status)
+
+    /** The answer to the watchdog's read of the notify CCCD. */
+    fun descriptorRead(status: Int = BluetoothGatt.GATT_SUCCESS) = manager.gattCallback.onDescriptorRead(gatt, cccd, status, ByteArray(2))
 
     /** Completes every command written so far and those it releases, [ms] apart as the manager paces them. */
     fun drain(ms: Long = 100) {

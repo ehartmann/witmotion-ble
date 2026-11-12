@@ -21,6 +21,7 @@ import fr.eande.witmotion.ImuSensorManager.ConnectionState
  * watches [ImuSensorManager.unexpectedDisconnects] for the whole app lifetime (a process
  * singleton held by WitnessApp, like [ImuSensorManager] itself) and retries with [retryAfterUnexpectedDisconnect]
  * when the sensor drops mid-session instead of leaving it disconnected until the app restarts.
+ * While [keep] is active, that scan-based retry is replaced by unlimited pending connects to the kept sensor.
  */
 public class ImuAutoConnector(
     private val sensorManager: ImuSensorManager,
@@ -33,6 +34,8 @@ public class ImuAutoConnector(
         private const val CONNECT_TIMEOUT_MS = 25_000L
         private const val MAX_RECONNECT_ATTEMPTS = 3
         private const val RECONNECT_BACKOFF_MS = 3000L
+        internal const val KEEP_RETRY_MS = 2_000L
+        internal const val KEEP_RENEW_MS = 30_000L
     }
 
     /** Surfaced so a screen can show a Snackbar while a mid-session reconnect is in flight. */
@@ -44,18 +47,36 @@ public class ImuAutoConnector(
 
     private var autoConnectJob: Job? = null
     private var retryJob: Job? = null
+    private var keepJob: Job? = null
+
+    private class Kept(val address: String, val name: String)
+
+    @Volatile private var kept: Kept? = null
 
     /** Set when a retry gave up: the drop of its own last connect must not start another one. */
     @Volatile private var retryExhausted = false
 
     private val _reconnectEvents = MutableSharedFlow<ReconnectEvent>(extraBufferCapacity = 1)
+    /**
+     * Mid-session reconnect progress. While keeping ([keep]): [ReconnectEvent.Started] on each drop,
+     * [ReconnectEvent.Succeeded] when the link is back, never [ReconnectEvent.Exhausted].
+     */
     public val reconnectEvents: SharedFlow<ReconnectEvent> = _reconnectEvents.asSharedFlow()
 
     init {
         // shortcut: one collector for the process lifetime since WitnessApp creates this class
         // once — revisit only if ImuAutoConnector ever stops being a singleton.
         scope.launch {
-            sensorManager.unexpectedDisconnects.collect { retryAfterUnexpectedDisconnect() }
+            // the manager's one-slot buffer is shared by all collectors: a second drop of a burst can be lost to a
+            // slow one, which is harmless here because the keeper reacts the same way to any drop
+            sensorManager.unexpectedDisconnects.collect {
+                if (kept != null) startKeepLoop(announce = true) else retryAfterUnexpectedDisconnect()
+            }
+        }
+        scope.launch {
+            sensorManager.connectedDevice.collect { device ->
+                if (device != null && kept != null) kept = Kept(device.address, device.name)
+            }
         }
         scope.launch {
             sensorManager.connectionState.collect { if (it == ConnectionState.CONNECTED || it == ConnectionState.CONNECTING) retryExhausted = false }
@@ -134,6 +155,7 @@ public class ImuAutoConnector(
      * [attemptConnect] and cancels any in-flight attempt of its own first.
      */
     public fun retryAfterUnexpectedDisconnect() {
+        if (kept != null) return
         if (sensorManager.isConnected()) return
         if (store.getAll().isEmpty()) return
         // a drop during a retry is handled by the attempt running: restarting would reset the budget
@@ -158,6 +180,59 @@ public class ImuAutoConnector(
         }
         autoConnectJob = job
         retryJob = job
+    }
+
+    /**
+     * Keeps the link to [address] up until [stopKeeping]: connects at once when no link is up or coming up, and
+     * after every unexpected drop issues a pending connect to the kept address, never to another registered sensor.
+     * A failed pending connect is issued again [KEEP_RETRY_MS] later, with no limit; a pending connect still waiting is
+     * renewed every [KEEP_RENEW_MS]. While keeping, the scan-based retry does not run. A sensor connected by other means
+     * while keeping becomes the kept one.
+     */
+    public fun keep(address: String, name: String) {
+        keepJob?.cancel()
+        autoConnectJob?.cancel()
+        kept = Kept(address, name)
+        if (!sensorManager.isConnected() && !sensorManager.isConnecting()) startKeepLoop(announce = false)
+    }
+
+    /** Stops keeping and cancels the keeper's own pending connect; a link that is up stays up. */
+    public fun stopKeeping() {
+        val wasKeeping = kept != null
+        kept = null
+        keepJob?.cancel()
+        keepJob = null
+        if (wasKeeping) sensorManager.cancelPendingConnect()
+    }
+
+    private fun startKeepLoop(announce: Boolean) {
+        if (keepJob?.isActive == true) return
+        keepJob = scope.launch {
+            if (announce) _reconnectEvents.emit(ReconnectEvent.Started)
+            while (true) {
+                if (sensorManager.isConnected()) {
+                    if (announce) _reconnectEvents.emit(ReconnectEvent.Succeeded)
+                    return@launch
+                }
+                val target = kept ?: return@launch
+                sensorManager.connectByAddress(target.address, target.name, pending = true)
+                var renew = false
+                while (!renew) {
+                    val state = withTimeoutOrNull(KEEP_RENEW_MS) {
+                        sensorManager.connectionState.first { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
+                    }
+                    when (state) {
+                        ConnectionState.CONNECTED -> {
+                            if (announce) _reconnectEvents.emit(ReconnectEvent.Succeeded)
+                            return@launch
+                        }
+                        ConnectionState.DISCONNECTED -> { delay(KEEP_RETRY_MS); renew = true }
+                        // past the pending request, the manager's own 20 s watchdog bounds the wait
+                        else -> renew = sensorManager.pendingConnectWaiting
+                    }
+                }
+            }
+        }
     }
 
     public fun cancel() {

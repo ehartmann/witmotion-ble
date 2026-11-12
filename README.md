@@ -71,6 +71,11 @@ connector.tryAutoConnect()                     // first registered sensor that a
 connector.tryAutoConnect(onlyIfSingle = true)  // only when a single registered sensor answers
                                                // returns the attempt (or the one in flight), null when
                                                // connected, connecting or nothing is registered
+connector.keep(address, name)                  // during a session: reconnect to this sensor after any drop,
+                                               // by pending connects, with no limit and no scan
+connector.stopKeeping()                        // ends it; a link that is up stays up
+sensor.connectByAddress(address, pending = true)  // Android auto connect: waits for the sensor, no 20 s limit
+sensor.unexpectedDisconnects                   // SharedFlow<LinkDrop>: address, cause (LINK_LOST, STREAM_SILENT), lastSampleAt
 ```
 
 `runClockCheck` switches the 0x61 frames to the sensor's millisecond counter (register `0x96` = 2)
@@ -100,7 +105,7 @@ last delivery may be an older phase (a HOLD from the BLE thread), so reset the c
 recording stops. HOLD means calm after a movement, not aiming: a lowered bow at rest also reads HOLD,
 so check the tilt.
 
-`ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect. Its
+`ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect, unless `keep` is active: then it issues pending connects to the kept sensor without limit, and `reconnectEvents` reports `Started` on each drop and `Succeeded` when the link is back, never `Exhausted`. Its
 scans are filtered on the registered sensors, so they keep running with the screen off.
 
 The app requests the runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
