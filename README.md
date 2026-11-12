@@ -203,6 +203,16 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 
 ## Changelog
 
+### 0.8.1
+
+Makes the keeper's return faster. Public API unchanged: binary-compatible with 0.8.0.
+
+- **Behaviour change:** while its pending connect waits, `ImuAutoConnector.keep` also runs a scan filtered on the kept address and connects directly as soon as the scan sees the sensor, instead of waiting for Android's own auto connect to notice it (the field test's 15 to 25 s return). The manager's 20 s connect watchdog bounds the direct connect.
+- **Behaviour change:** the keeper scans continuously for the first 2 minutes of a loss (restarted at each pending connect issue), then 10 s per 30 s renewal. At most 4 keeper scans start in any 30 s window (Android allows 5).
+- **Behaviour change:** after a failed direct connect the keeper goes back to the pending connect and starts no scan until the next renewal.
+- **Behaviour change:** the keeper stops only a scan it started, and starts none while another runs. A scan another component starts while the keeper's runs returns early and sees only the kept sensor until the keeper's scan ends.
+- **Behaviour change:** `stopKeeping()` also drops the keeper's own direct connect still in flight.
+
 ### 0.8.0
 
 Adds drop causes, a stream watchdog, pending connects with a keeper, and a raise that starts at the last calm rest. **Breaking:** `ImuSensorManager.unexpectedDisconnects` changes type, and `BowMovementAnalyzer` loses `raisePauseMaxMs`. **Not binary-compatible** for code that calls the constructor of `BowMovementAnalyzer` (parameters removed and added), even `BowMovementAnalyzer()`, or `ImuSensorManager.connectByAddress` (new `pending` parameter, no `@JvmOverloads`): it fails with `NoSuchMethodError` until recompiled.
