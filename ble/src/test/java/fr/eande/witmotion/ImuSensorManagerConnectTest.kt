@@ -7,6 +7,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlin.concurrent.thread
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -60,6 +61,46 @@ class ImuSensorManagerConnectTest {
         h.manager.connectByAddress(device.address, pending = true)
         assertThat(drops).containsExactly(LinkDrop(null, DropCause.LINK_LOST, null))
         assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+    }
+
+    @Test fun `a pending connect refused by a SecurityException is dropped at once, a direct one is not`() {
+        h.manager.openGatt = { _, _ -> throw SecurityException("no BLUETOOTH_CONNECT") }
+        h.manager.connectByAddress(device.address, pending = true)
+        assertThat(drops).containsExactly(LinkDrop(null, DropCause.LINK_LOST, null))
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+        assertThat(h.manager.pendingConnectWaiting).isFalse()
+
+        drops.clear()
+        h.manager.connectByAddress(device.address)
+        h.idle(25_000)
+        assertThat(drops).isEmpty()
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+    }
+
+    @Test fun `a connect posted from another thread opens nothing once a disconnect or a newer connect came first`() {
+        var refused = 0
+        h.manager.openGatt = { _, _ -> refused++; throw SecurityException("no BLUETOOTH_CONNECT") }
+        thread { h.manager.connectByAddress(device.address, pending = true) }.join()
+        h.manager.disconnect()
+        h.idle(1)
+        assertThat(refused).isEqualTo(0)
+        assertThat(drops).isEmpty()
+
+        thread { h.manager.connectByAddress(device.address, pending = true) }.join()
+        h.manager.openGatt = { d, auto -> opened += d.address to auto; h.gatt }
+        h.manager.connectByAddress(device.address, pending = true)
+        h.idle(1)
+        assertThat(refused).isEqualTo(0)
+        assertThat(drops).isEmpty()
+        assertThat(h.manager.pendingConnectWaiting).isTrue()
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTING)
+    }
+
+    @Test fun `a pending connect to an invalid address is dropped at once`() {
+        h.manager.connectByAddress("not an address", pending = true)
+        assertThat(drops).containsExactly(LinkDrop(null, DropCause.LINK_LOST, null))
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+        assertThat(h.manager.pendingConnectWaiting).isFalse()
     }
 
     @Test fun `the stack ending a waiting pending connect is one drop and nothing is left to cancel`() {
