@@ -122,18 +122,18 @@ class ShotBoundariesTest {
     }
 
     @Test
-    fun `session 39's shape - the raise runs from the rest's end to the draw start, across the calm at the aim`() {
+    fun `session 39's shape - the raise runs to the DRAW the detector sees, 3 s, as the slow draw start is under 20 deg per s`() {
         val samples = stretch(0, 1_000, gyro = 0f) { 25.0 } +
             stretch(1_000, 1_500, gyro = 50f) { dt -> 25.0 - 20.0 * dt / 1_500 } +
-            stretch(2_500, 1_100, gyro = 0f) { 5.0 } +
-            stretch(3_600, 200, gyro = 12f) { 5.0 } +
-            drawToRelease(3_800)
+            stretch(2_500, 1_300, gyro = 0f) { 5.0 } +
+            stretch(3_800, 200, gyro = 12f) { 5.0 } +
+            drawToRelease(4_000)
 
         val b = analyzer.shotBoundaries(samples)!!
 
         assertThat(b.raiseStartIndex).isEqualTo(samples.indexAt(1_000))
-        assertThat(b.drawStartIndex).isEqualTo(samples.indexAt(3_800))
-        assertThat(samples[b.drawStartIndex].timestamp - samples[b.raiseStartIndex!!].timestamp).isIn(2_790L..2_810L)
+        assertThat(b.drawStartIndex).isEqualTo(samples.indexAt(4_000))
+        assertThat(samples[b.drawStartIndex].timestamp - samples[b.raiseStartIndex!!].timestamp).isIn(2_990L..3_010L)
     }
 
     @Test
@@ -146,6 +146,16 @@ class ShotBoundariesTest {
         assertThat(analyzer.shotBoundaries(joltThenDraw)!!.raiseStartIndex).isNull()
         val b = analyzer.shotBoundaries(joltThenRestThenRaise)!!
         assertThat(joltThenRestThenRaise[b.raiseStartIndex!!].timestamp).isIn(2_000L..2_040L)
+    }
+
+    @Test
+    fun `the look-back is 10 s - a rest 9 s before the draw start gives a raise, 11 s gives none`() {
+        val patient = BowMovementAnalyzer(raiseMaxMs = 20_000)
+        fun restedBefore(calmMs: Long) =
+            stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000, ms = 1_000) + stretch(2_000, calmMs, gyro = 0f) + drawToRelease(2_000 + calmMs)
+
+        assertThat(patient.shotBoundaries(restedBefore(8_000))!!.raiseStartIndex).isNotNull()
+        assertThat(patient.shotBoundaries(restedBefore(10_000))!!.raiseStartIndex).isNull()
     }
 
     @Test
