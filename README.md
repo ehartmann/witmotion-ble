@@ -71,6 +71,11 @@ connector.tryAutoConnect()                     // first registered sensor that a
 connector.tryAutoConnect(onlyIfSingle = true)  // only when a single registered sensor answers
                                                // returns the attempt (or the one in flight), null when
                                                // connected, connecting or nothing is registered
+connector.keep(address, name)                  // during a session: reconnect to this sensor after any drop,
+                                               // by pending connects, with no limit and no scan
+connector.stopKeeping()                        // ends it; a link that is up stays up
+sensor.connectByAddress(address, pending = true)  // Android auto connect: waits for the sensor, no 20 s limit
+sensor.unexpectedDisconnects                   // SharedFlow<LinkDrop>: address, cause (LINK_LOST, STREAM_SILENT), lastSampleAt
 ```
 
 `runClockCheck` switches the 0x61 frames to the sensor's millisecond counter (register `0x96` = 2)
