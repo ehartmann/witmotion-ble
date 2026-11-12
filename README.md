@@ -195,6 +195,15 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 
 ## Changelog
 
+### 0.8.0
+
+The raise starts at the last calm rest at least 20° off the aim, within `ShotCycleDetector.RAISE_LOOK_BACK_MS` (10 s) of the draw start.
+
+- **Breaking:** `BowMovementAnalyzer`'s `raisePauseMaxMs` parameter is removed (callers naming it no longer compile). A calm stretch at the aim no longer ends the raise; `raiseMaxMs` (6 s) now bounds the raise from its start to the draw start, and a raise shorter than 0.5 s is not one.
+- **New:** `ShotCycleDetector.RAISE_LOOK_BACK_MS` (10 s).
+- **Behaviour change:** `idleKeepMs` defaults to `RAISE_LOOK_BACK_MS` (was 6 s), so a raise keeps its 1 s lead.
+- **Behaviour change:** a release in the look-back ends the walk back to the rest: a calm release jolt is not taken for a rest.
+
 ### 0.7.0
 
 Adds the raise, phase boundaries, a live phase and the release rotation. Source-compatible except an exhaustive `when` over `ShotPhase`, which needs a `RAISE` branch; **not binary-compatible** for code that calls the constructors of `DetectedShot` (constructor, `copy`), `BowMovementAnalyzer` (new parameters) or `ShotCycleDetector` (`onPhase` sits before `onShotDetected`): such code fails with `NoSuchMethodError` until recompiled. `detectPhases` is unchanged.
