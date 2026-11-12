@@ -186,6 +186,7 @@ public class ImuSensorManager(private val context: Context) {
     @Volatile private var notifyCccd: BluetoothGattDescriptor? = null
     @Volatile private var lastPacketAt = 0L
     @Volatile private var streamWatched = false
+    @Volatile private var probedGatt: BluetoothGatt? = null
     @Volatile private var discoveryRetried = false
     @Volatile private var rateRewritten = false
     @Volatile private var isScanning = false
@@ -217,6 +218,7 @@ public class ImuSensorManager(private val context: Context) {
                 return
             }
             Log.w(TAG, "No sample for $STREAM_TIMEOUT_MS ms, probing the link")
+            probedGatt = g
             mainHandler.postDelayed(probeTimeout, PROBE_TIMEOUT_MS)
             gattOps.enqueue(g) {
                 val started = try { it.readDescriptor(cccd) } catch (e: Exception) { false }
@@ -225,7 +227,10 @@ public class ImuSensorManager(private val context: Context) {
             }
         }
     }
-    private val probeTimeout: Runnable = Runnable { dropLink(gatt) }
+    private val probeTimeout: Runnable = Runnable {
+        val probed = probedGatt
+        if (probed != null && gatt === probed) dropLink(probed)
+    }
 
     private fun startStreamWatch() {
         if (streamWatched) return
@@ -235,6 +240,7 @@ public class ImuSensorManager(private val context: Context) {
 
     private fun stopStreamWatch() {
         notifyCccd = null
+        probedGatt = null
         streamWatched = false
         mainHandler.removeCallbacks(streamWatchdog)
         mainHandler.removeCallbacks(probeTimeout)
@@ -602,7 +608,9 @@ public class ImuSensorManager(private val context: Context) {
 
         /** The link answers while no sample comes: the sensor's stream is silent, not the link lost. */
         private fun probeAnswered(gatt: BluetoothGatt, status: Int) {
-            if (this@ImuSensorManager.gatt != gatt) return
+            if (this@ImuSensorManager.gatt != gatt || probedGatt !== gatt) return
+            probedGatt = null
+            mainHandler.removeCallbacks(probeTimeout)
             gattOps.next(gatt)
             dropLink(gatt, if (status == BluetoothGatt.GATT_SUCCESS) DropCause.STREAM_SILENT else DropCause.LINK_LOST)
         }

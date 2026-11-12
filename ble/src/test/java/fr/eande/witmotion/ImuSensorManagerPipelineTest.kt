@@ -511,6 +511,20 @@ class ImuSensorManagerPipelineTest {
     }
 
     @Test
+    fun `a probe pending when connect() starts does not drop the new link`() {
+        val drops = streamDrops()
+        connectedWithOneSample()
+        h.idle(1_500)
+        verify { h.gatt.readDescriptor(h.cccd) }
+
+        h.manager.connect(device)
+        h.injectGatt()
+        h.idle(1_500)
+
+        assertThat(drops).isEmpty()
+    }
+
+    @Test
     fun `a notification landing just after connect() does not start a watchdog on the new link`() {
         val drops = streamDrops()
         connectedWithOneSample()
