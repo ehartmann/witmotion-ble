@@ -89,6 +89,7 @@ val detector = ShotCycleDetector(
 )
 val b = analyzer.shotBoundaries(samples)        // ShotBoundaries: raise, draw, hold, release indices; null without them
 val rot = analyzer.releaseRotation(samples, releaseIndex)  // ReleaseRotation: amplitude, peak, stop time
+ShotCycleDetector.RAISE_LOOK_BACK_MS             // 10 s: how far before the draw start the raise's rest is looked for; the default idleKeepMs
 analyzer.raiseEndTiltDeg                        // 10°: within this tilt of the aim, the bow is up (a raise ends there)
 ```
 
@@ -194,15 +195,6 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 (as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Changelog
-
-### 0.8.0
-
-The raise starts at the last calm rest at least 20° off the aim, within `ShotCycleDetector.RAISE_LOOK_BACK_MS` (10 s) of the draw start.
-
-- **Breaking:** `BowMovementAnalyzer`'s `raisePauseMaxMs` parameter is removed (callers naming it no longer compile). A calm stretch at the aim no longer ends the raise; `raiseMaxMs` (6 s) now bounds the raise from its start to the draw start, and a raise shorter than 0.5 s is not one.
-- **New:** `ShotCycleDetector.RAISE_LOOK_BACK_MS` (10 s).
-- **Behaviour change:** `idleKeepMs` defaults to `RAISE_LOOK_BACK_MS` (was 6 s), so a raise keeps its 1 s lead.
-- **Behaviour change:** a release in the look-back ends the walk back to the rest: a calm release jolt is not taken for a rest.
 
 ### 0.7.0
 
