@@ -407,15 +407,18 @@ public class ImuSensorManager(private val context: Context) {
 
     // --- Connection ---
 
-    public fun connect(device: ImuSensorDevice) {
+    public fun connect(device: ImuSensorDevice): Unit = open(device, pending = false)
+
+    private fun open(device: ImuSensorDevice, pending: Boolean) {
         stopScan()
+        pendingConnect = pending
         userInitiatedDisconnect = false
         lastSampleAt = null
         _connectionState.value = ConnectionState.CONNECTING
         mainHandler.removeCallbacks(connectWatchdog)
         mainHandler.removeCallbacks(noStreamWatchdog)
         stopStreamWatch()
-        mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
+        if (!pending) mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
         clockChecks.abort()
 
         gatt?.let { old ->
@@ -436,20 +439,20 @@ public class ImuSensorManager(private val context: Context) {
             return
         }
         val bleDevice = try {
-            adapter.getRemoteDevice(device.address)
+            if (pending && isRandomStatic(device.address) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                adapter.getRemoteLeDevice(device.address, BluetoothDevice.ADDRESS_TYPE_RANDOM)
+            } else {
+                adapter.getRemoteDevice(device.address)
+            }
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, "Invalid BLE address", e)
             _connectionState.value = ConnectionState.DISCONNECTED
             return
         }
 
-        val appContext = context.applicationContext
-        val callback = gattCallback
         val runConnect = Runnable {
             try {
-                // The API 37 settings-based overload can replace this once minSdk reaches 37
-                @Suppress("DEPRECATION")
-                gatt = bleDevice.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
+                gatt = openGatt(bleDevice, pending)
                 Log.d(TAG, "Connecting to ${device.name}...")
             } catch (e: SecurityException) {
                 Log.e(TAG, "connectGatt denied (missing runtime permission?)", e)
@@ -463,15 +466,34 @@ public class ImuSensorManager(private val context: Context) {
         }
     }
 
+    @Volatile private var pendingConnect = false
+
+    internal var openGatt: (device: BluetoothDevice, autoConnect: Boolean) -> BluetoothGatt? = { device, autoConnect ->
+        // The API 37 settings-based overload can replace this once minSdk reaches 37
+        @Suppress("DEPRECATION")
+        device.connectGatt(context.applicationContext, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
+    }
+
     /**
      * Connect directly to a device by BLE address, without prior scan.
      * Used for auto-reconnecting to registered devices.
+     *
+     * With [pending], Android keeps the request open until the sensor is back in range: the state stays
+     * CONNECTING with no give-up, and the 20 s connect watchdog starts only once the link is up.
      */
-    public fun connectByAddress(address: String, name: String = "WT9011DCL") {
-        connect(ImuSensorDevice(address = address, name = name))
+    public fun connectByAddress(address: String, name: String = "WT9011DCL", pending: Boolean = false) {
+        open(ImuSensorDevice(address = address, name = name), pending)
+    }
+
+    /** Ends the last connect if it is a pending one; true when it did. */
+    internal fun cancelPendingConnect(): Boolean {
+        if (!pendingConnect) return false
+        disconnect()
+        return true
     }
 
     public fun disconnect() {
+        pendingConnect = false
         userInitiatedDisconnect = true
         gatt?.disconnect()
         gatt?.close()
@@ -499,6 +521,11 @@ public class ImuSensorManager(private val context: Context) {
                     streamSeen = false
                     lastSampleAt = null
                     stopStreamWatch()
+                    if (pendingConnect) {
+                        pendingConnect = false
+                        mainHandler.removeCallbacks(connectWatchdog)
+                        mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
+                    }
                     gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -856,3 +883,6 @@ public class ImuSensorManager(private val context: Context) {
 
     public fun isConnecting(): Boolean = _connectionState.value == ConnectionState.CONNECTING
 }
+
+internal fun isRandomStatic(address: String): Boolean =
+    address.take(2).toIntOrNull(16)?.let { it and 0xC0 == 0xC0 } ?: false
