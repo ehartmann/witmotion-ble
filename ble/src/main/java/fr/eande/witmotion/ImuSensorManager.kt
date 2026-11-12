@@ -455,10 +455,14 @@ public class ImuSensorManager(private val context: Context) {
         val runConnect = Runnable {
             try {
                 gatt = openGatt(bleDevice, pending)
-                if (gatt == null && pending) dropLink(null)
+                if (gatt == null && pending) {
+                    pendingConnect = false
+                    dropLink(null)
+                }
                 Log.d(TAG, "Connecting to ${device.name}...")
             } catch (e: SecurityException) {
                 Log.e(TAG, "connectGatt denied (missing runtime permission?)", e)
+                pendingConnect = false
                 _connectionState.value = ConnectionState.DISCONNECTED
             }
         }
@@ -493,7 +497,9 @@ public class ImuSensorManager(private val context: Context) {
     /**
      * True while a [connectByAddress] request with `pending = true` waits for the sensor. Set by that call;
      * cleared when the link comes up (STATE_CONNECTED), by [disconnect], by any other connect, when the
-     * stack ends the request, and when the request cannot be opened.
+     * request cannot be opened (no adapter, invalid address, no GATT, SecurityException) and when the
+     * stack ends it with a callback. Android can also end a request silently: the flag then stays true
+     * with state CONNECTING, so a caller renews it periodically, as [ImuAutoConnector] does.
      *
      * The state is CONNECTING both while the request waits and while the link, once up, is being set up
      * (service discovery, notification enable): this tells them apart, so a caller does not start a direct
