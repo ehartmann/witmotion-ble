@@ -49,6 +49,7 @@ public class ImuAutoConnector internal constructor(
         internal const val KEEP_RENEW_MS = 30_000L
         internal const val KEEP_SCAN_FULL_MS = 120_000L
         internal const val KEEP_SCAN_WINDOW_MS = 10_000L
+        internal const val KEEP_SCAN_MIN_GAP_MS = 7_500L
     }
 
     /** Surfaced so a screen can show a Snackbar while a mid-session reconnect is in flight. */
@@ -66,8 +67,16 @@ public class ImuAutoConnector internal constructor(
 
     @Volatile private var kept: Kept? = null
 
-    /** True while the scan running is one the keeper started: it never stops another one. */
-    @Volatile private var keeperScan = false
+    /** The manager's scan generation of the keeper's last scan start; the scan is the keeper's only while it still holds. */
+    @Volatile private var keeperScanGeneration = -1
+
+    private fun keeperOwnsScan() =
+        sensorManager.scanning && sensorManager.scanGeneration == keeperScanGeneration
+
+    /** True from the keeper's direct connect until it ends. */
+    @Volatile private var directInFlight = false
+
+    private var lastScanStartMs: Long? = null
 
     private enum class Wake { CONNECTED, DISCONNECTED, SEEN }
 
@@ -213,7 +222,10 @@ public class ImuAutoConnector internal constructor(
      * connect watchdog) as soon as the scan sees it. The scan runs continuously for the first [KEEP_SCAN_FULL_MS] of a
      * loop, restarted at each pending (re)issue (one scan start each), then only [KEEP_SCAN_WINDOW_MS] after each one.
      * It stops when the link is up, at [stopKeeping] and before the direct connect. The keeper starts no scan while another
-     * is running and stops only its own. A failed direct connect goes back to the pending connect after [KEEP_RETRY_MS].
+     * is running and stops only its own; a scan another component starts while the keeper's runs returns early, so it sees
+     * only the kept sensor until the keeper's scan ends. Keeper scans start at least [KEEP_SCAN_MIN_GAP_MS] apart (Android
+     * allows 5 starts per 30 s). A failed direct connect goes back to the pending connect after [KEEP_RETRY_MS], with no
+     * scan until the next renewal, so a sensor at the edge of range does not make the pending request close every few seconds.
      */
     public fun keep(address: String, name: String) {
         keepJob?.cancel()
@@ -223,26 +235,29 @@ public class ImuAutoConnector internal constructor(
         if (!sensorManager.isConnected() && !sensorManager.isConnecting()) startKeepLoop(announce = false)
     }
 
-    /** Stops keeping and cancels the keeper's own pending connect; a link that is up stays up. */
+    /** Stops keeping and cancels the keeper's own pending or direct connect; a link that is up stays up. */
     public fun stopKeeping() {
         val wasKeeping = kept != null
         kept = null
         keepJob?.cancel()
         keepJob = null
         stopKeeperScan()
-        if (wasKeeping) sensorManager.cancelPendingConnect()
+        if (wasKeeping && !sensorManager.cancelPendingConnect() && directInFlight && !sensorManager.isConnected()) {
+            sensorManager.disconnect()
+        }
+        directInFlight = false
     }
 
     private fun stopKeeperScan() {
-        if (!keeperScan) return
-        keeperScan = false
-        if (sensorManager.scanning) sensorManager.stopScan()
+        if (keeperOwnsScan()) sensorManager.stopScan()
+        keeperScanGeneration = -1
     }
 
     private fun startKeepLoop(announce: Boolean) {
         if (keepJob?.isActive == true) return
         keepJob = scope.launch {
             val loopStart = clockMs()
+            var scanResumeAt = loopStart
             if (announce) _reconnectEvents.emit(ReconnectEvent.Started)
             while (true) {
                 if (sensorManager.isConnected()) {
@@ -252,12 +267,15 @@ public class ImuAutoConnector internal constructor(
                 }
                 val target = kept ?: return@launch
                 sensorManager.connectByAddress(target.address, target.name, pending = true)
-                // connecting stopped any scan running: a scan found now is not the keeper's, so it is left alone
-                keeperScan = false
-                if (!sensorManager.scanning) {
-                    val full = clockMs() - loopStart < KEEP_SCAN_FULL_MS
-                    sensorManager.startScan(listOf(target.address), if (full) KEEP_RENEW_MS else KEEP_SCAN_WINDOW_MS)
-                    keeperScan = sensorManager.scanning
+                // connecting stopped any scan running: one found now is not the keeper's, so it is left alone
+                keeperScanGeneration = -1
+                val now = clockMs()
+                if (!sensorManager.scanning && now >= scanResumeAt && lastScanStartMs?.let { now - it >= KEEP_SCAN_MIN_GAP_MS } != false) {
+                    sensorManager.scanFor(listOf(target.address), if (now - loopStart < KEEP_SCAN_FULL_MS) KEEP_RENEW_MS else KEEP_SCAN_WINDOW_MS)
+                    if (sensorManager.scanning) {
+                        keeperScanGeneration = sensorManager.scanGeneration
+                        lastScanStartMs = now
+                    }
                 }
                 var seenIgnored = false
                 var renew = false
@@ -266,7 +284,7 @@ public class ImuAutoConnector internal constructor(
                         .filter { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
                         .map { if (it == ConnectionState.CONNECTED) Wake.CONNECTED else Wake.DISCONNECTED }
                     val wake = withTimeoutOrNull(KEEP_RENEW_MS) {
-                        if (keeperScan && !seenIgnored) {
+                        if (keeperOwnsScan() && !seenIgnored) {
                             val seen = sensorManager.discoveredDevices
                                 .filter { devices -> devices.any { it.address.equals(target.address, ignoreCase = true) } }
                                 .map { Wake.SEEN }
@@ -277,27 +295,28 @@ public class ImuAutoConnector internal constructor(
                     }
                     when (wake) {
                         Wake.CONNECTED -> {
+                            directInFlight = false
                             stopKeeperScan()
                             if (announce) _reconnectEvents.emit(ReconnectEvent.Succeeded)
                             return@launch
                         }
-                        Wake.DISCONNECTED -> { stopKeeperScan(); delay(KEEP_RETRY_MS); renew = true }
-                        Wake.SEEN -> {
-                            if (!sensorManager.pendingConnectWaiting) {
-                                seenIgnored = true
-                                continue
-                            }
+                        Wake.DISCONNECTED -> {
                             stopKeeperScan()
-                            sensorManager.connectByAddress(target.address, target.name, pending = false)
-                            // the manager's 20 s watchdog bounds this wait
-                            val result = sensorManager.connectionState
-                                .first { it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED }
-                            if (result == ConnectionState.CONNECTED) {
-                                if (announce) _reconnectEvents.emit(ReconnectEvent.Succeeded)
-                                return@launch
+                            if (directInFlight) {
+                                directInFlight = false
+                                scanResumeAt = clockMs() + KEEP_RETRY_MS + KEEP_RENEW_MS
                             }
                             delay(KEEP_RETRY_MS)
                             renew = true
+                        }
+                        Wake.SEEN -> {
+                            if (!sensorManager.pendingConnectWaiting || !keeperOwnsScan()) {
+                                seenIgnored = true
+                            } else {
+                                stopKeeperScan()
+                                directInFlight = true
+                                sensorManager.connectByAddress(target.address, target.name, pending = false)
+                            }
                         }
                         // past the pending request, the manager's own 20 s watchdog bounds the wait
                         null -> renew = sensorManager.pendingConnectWaiting
