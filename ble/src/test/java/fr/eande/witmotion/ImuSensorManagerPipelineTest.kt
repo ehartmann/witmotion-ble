@@ -8,6 +8,7 @@ import android.content.Context
 import android.os.SystemClock
 import com.google.common.truth.Truth.assertThat
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothProfile
 import io.mockk.Runs
 import io.mockk.clearMocks
 import org.robolectric.shadows.ShadowLog
@@ -29,6 +30,7 @@ import org.robolectric.RobolectricTestRunner
 class ImuSensorManagerPipelineTest {
 
     private val h = GattHarness()
+    private val dropped = mutableListOf<LinkDrop>()
 
     private fun hex(bytes: ByteArray) = bytes.joinToString(" ") { "%02X".format(it) }
 
@@ -184,7 +186,7 @@ class ImuSensorManagerPipelineTest {
 
     private fun CoroutineScope.countDrops(manager: ImuSensorManager): () -> Int {
         var drops = 0
-        launch { manager.unexpectedDisconnects.collect { drops++ } }
+        launch { manager.unexpectedDisconnects.collect { drops++; dropped += it } }
         return { drops }
     }
 
@@ -341,7 +343,37 @@ class ImuSensorManagerPipelineTest {
 
         assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
         assertThat(drops()).isEqualTo(1)
+        assertThat(dropped.single().cause).isEqualTo(DropCause.LINK_LOST)
+        assertThat(dropped.single().lastSampleAt).isNull()
         verify { h.gatt.disconnect() }
+        scope.cancel()
+    }
+
+    @Test
+    fun `a drop the stack reports is LINK_LOST with the link's address and last sample time`() {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val drops = mutableListOf<LinkDrop>()
+        scope.launch { h.manager.unexpectedDisconnects.collect { drops += it } }
+        h.connect()
+        h.notify(GattHarness.frame(1))
+        h.notify(GattHarness.frame(2))
+
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+
+        assertThat(drops).containsExactly(LinkDrop("AA:BB:CC:DD:EE:FF", DropCause.LINK_LOST, h.manager.lastSample.value!!.timestamp))
+        scope.cancel()
+    }
+
+    @Test
+    fun `a disconnect() emits no drop`() {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val drops = mutableListOf<LinkDrop>()
+        scope.launch { h.manager.unexpectedDisconnects.collect { drops += it } }
+        h.connect()
+
+        h.manager.disconnect()
+
+        assertThat(drops).isEmpty()
         scope.cancel()
     }
 

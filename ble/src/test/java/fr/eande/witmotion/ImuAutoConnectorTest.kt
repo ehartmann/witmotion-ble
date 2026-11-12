@@ -44,7 +44,7 @@ class ImuAutoConnectorTest {
 
     private lateinit var store: RegisteredImuStore
     private lateinit var sensorManager: ImuSensorManager
-    private lateinit var unexpectedDisconnects: MutableSharedFlow<Unit>
+    private lateinit var unexpectedDisconnects: MutableSharedFlow<LinkDrop>
     private val connectionState = MutableStateFlow(ImuSensorManager.ConnectionState.DISCONNECTED)
     private val onDeviceDiscoveredSlot = slot<(ImuSensorDevice) -> Unit>()
 
@@ -144,7 +144,7 @@ class ImuAutoConnectorTest {
         ImuAutoConnector(sensorManager, store, backgroundScope)
         runCurrent() // let the init-block collector actually subscribe before emitting
 
-        unexpectedDisconnects.tryEmit(Unit)
+        unexpectedDisconnects.tryEmit(LinkDrop(null, DropCause.LINK_LOST, null))
         advanceTimeBy(fullRetrySequenceMs)
         runCurrent()
 
@@ -331,7 +331,7 @@ class ImuAutoConnectorTest {
             onDeviceDiscoveredSlot.captured.invoke(ImuSensorDevice("AA:BB:CC:DD:EE:FF", "WT9011DCL", rssi = -50))
             advanceTimeBy(500)
             connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
-            unexpectedDisconnects.tryEmit(Unit)
+            unexpectedDisconnects.tryEmit(LinkDrop(null, DropCause.LINK_LOST, null))
             runCurrent()
             advanceTimeBy(backoff)
         }
@@ -360,7 +360,7 @@ class ImuAutoConnectorTest {
         connectionState.value = ImuSensorManager.ConnectionState.CONNECTING // SensorPresenceService.connectByAddress
         runCurrent()
         connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
-        unexpectedDisconnects.tryEmit(Unit)
+        unexpectedDisconnects.tryEmit(LinkDrop(null, DropCause.LINK_LOST, null))
         runCurrent()
 
         assertThat(events.last()).isEqualTo(ImuAutoConnector.ReconnectEvent.Started)

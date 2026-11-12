@@ -34,6 +34,22 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
 
+/** Why a link that was up went down without a disconnect() call. */
+public enum class DropCause {
+    /** The Android stack reported the link down, or it did not answer the stream watchdog's probe. */
+    LINK_LOST,
+    /** No sample for STREAM_TIMEOUT_MS while the sensor still answered on the link. */
+    STREAM_SILENT,
+}
+
+public data class LinkDrop(
+    /** The sensor's address; null when no device was reached. */
+    val address: String?,
+    val cause: DropCause,
+    /** [ImuSample.timestamp] of the last sample on this link; null when none came. */
+    val lastSampleAt: Long?,
+)
+
 /**
  * Manages BLE connection to a WitMotion WT9011DCL IMU sensor.
  *
@@ -142,18 +158,21 @@ public class ImuSensorManager(private val context: Context) {
     /** Most recent parsed IMU sample. Observe for live display. */
     public val lastSample: StateFlow<ImuSample?> = _lastSample.asStateFlow()
 
-    private val _unexpectedDisconnects = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val _unexpectedDisconnects = MutableSharedFlow<LinkDrop>(extraBufferCapacity = 1)
     /**
      * Emits when the sensor drops for any reason other than an explicit [disconnect] call —
      * out of range, low battery, sensor auto-sleep. A SharedFlow rather than a callback slot
      * so more than one collector (ImuAutoConnector today, potentially others later) can react
-     * without overwriting each other, unlike a single nullable lambda.
+     * without overwriting each other, unlike a single nullable lambda. Each drop says its
+     * cause, the sensor's address and the time of the link's last sample.
      */
-    public val unexpectedDisconnects: SharedFlow<Unit> = _unexpectedDisconnects.asSharedFlow()
+    public val unexpectedDisconnects: SharedFlow<LinkDrop> = _unexpectedDisconnects.asSharedFlow()
 
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var writeCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var userInitiatedDisconnect = false
+    @Volatile private var dropCause = DropCause.LINK_LOST
+    @Volatile private var lastSampleAt: Long? = null
     private val gattOps = GattOpQueue { g -> dropLink(g) }
 
     /** Both swapped together, so a reset can never meet a delivery's half-updated pair. */
@@ -184,12 +203,13 @@ public class ImuSensorManager(private val context: Context) {
      * link that was never up, so the disconnected callback is run by hand; [g] null (connectGatt
      * returned nothing) has no callback to run.
      */
-    private fun dropLink(g: BluetoothGatt?) {
+    internal fun dropLink(g: BluetoothGatt?, cause: DropCause = DropCause.LINK_LOST) {
         if (g == null) {
             _connectionState.value = ConnectionState.DISCONNECTED
-            _unexpectedDisconnects.tryEmit(Unit)
+            _unexpectedDisconnects.tryEmit(LinkDrop(null, DropCause.LINK_LOST, null))
             return
         }
+        dropCause = cause
         try {
             g.disconnect()
         } catch (e: Exception) {
@@ -342,6 +362,7 @@ public class ImuSensorManager(private val context: Context) {
     public fun connect(device: ImuSensorDevice) {
         stopScan()
         userInitiatedDisconnect = false
+        lastSampleAt = null
         _connectionState.value = ConnectionState.CONNECTING
         mainHandler.removeCallbacks(connectWatchdog)
         mainHandler.removeCallbacks(noStreamWatchdog)
@@ -426,10 +447,14 @@ public class ImuSensorManager(private val context: Context) {
                     discoveryRetried = false
                     rateRewritten = false
                     streamSeen = false
+                    lastSampleAt = null
                     gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.d(TAG, "Disconnected (status=$status)")
+                    val address = gatt.device?.address
+                    val cause = dropCause
+                    dropCause = DropCause.LINK_LOST
                     _connectionState.value = ConnectionState.DISCONNECTED
                     // not a late callback from a GATT that connect() already replaced
                     if (this@ImuSensorManager.gatt.let { it == null || it == gatt }) clockChecks.abort()
@@ -452,7 +477,7 @@ public class ImuSensorManager(private val context: Context) {
                     if (userInitiatedDisconnect) {
                         userInitiatedDisconnect = false
                     } else {
-                        _unexpectedDisconnects.tryEmit(Unit)
+                        _unexpectedDisconnects.tryEmit(LinkDrop(address, cause, lastSampleAt))
                     }
                 }
             }
@@ -611,6 +636,7 @@ public class ImuSensorManager(private val context: Context) {
                         }
                     }
                 }
+                lastSampleAt = samples.last().timestamp
                 _lastSample.value = samples.last()
             }
         }

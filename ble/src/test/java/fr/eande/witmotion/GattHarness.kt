@@ -30,6 +30,7 @@ internal class GattHarness(val manager: ImuSensorManager = ImuSensorManager(Runt
     private var completed = 0
 
     init {
+        every { gatt.device.address } returns "AA:BB:CC:DD:EE:FF"
         val service = mockk<BluetoothGattService>()
         every { service.getCharacteristic(ImuSensorManager.WRITE_CHAR_UUID) } returns writeChar
         every { service.getCharacteristic(ImuSensorManager.NOTIFY_CHAR_UUID) } returns notifyChar
