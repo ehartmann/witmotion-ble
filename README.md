@@ -202,6 +202,23 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 
 ## Changelog
 
+### 0.8.0
+
+Adds drop causes, a stream watchdog, pending connects with a keeper, and a raise that starts at the last calm rest. **Breaking:** `ImuSensorManager.unexpectedDisconnects` changes type, and `BowMovementAnalyzer` loses `raisePauseMaxMs`. **Not binary-compatible** for code that calls the constructor of `BowMovementAnalyzer` (parameters removed and added), even `BowMovementAnalyzer()`: it fails with `NoSuchMethodError` until recompiled.
+
+- **Breaking:** `ImuSensorManager.unexpectedDisconnects` is a `SharedFlow<LinkDrop>` (was `SharedFlow<Unit>`): collectors of `Unit` must change.
+- **Breaking:** `BowMovementAnalyzer`'s `raisePauseMaxMs` parameter is removed (callers naming it no longer compile); it gains `raiseMinMs` and `raiseLookBackMs`. A calm stretch at the aim no longer ends the raise.
+- **New:** `LinkDrop(address, cause, lastSampleAt)` and `DropCause` (`LINK_LOST`, `STREAM_SILENT`).
+- **New:** a 1.5 s stream watchdog: a link with no sample for 1.5 s is probed by a CCCD read. An answered read means `STREAM_SILENT`; no answer or a failed read means `LINK_LOST`. The link is then closed and the drop emitted.
+- **New:** `connectByAddress(address, name, pending = true)`: an Android auto connect that waits for the sensor with no 20 s limit, random static addresses included (Android 13+). The stack ending it emits a `LINK_LOST` drop.
+- **New:** `ImuSensorManager.pendingConnectWaiting` is public: true while a pending connect waits, so a caller can tell it from a link that is up and being set up (both report `CONNECTING`). Android can end a request silently: the flag then stays true, so callers renew.
+- **New:** `ImuAutoConnector.keep(address, name)` and `stopKeeping()`: after any drop the kept sensor is reconnected without limit by pending connects (again 2 s after a failure), never by scan, never `Exhausted`. A request is renewed every 30 s only while it still waits; `keep` never replaces a link that is up or being set up. A sensor connected by other means becomes the kept one, and `retryAfterUnexpectedDisconnect()` returns at once while keeping.
+- **New:** `ShotCycleDetector.RAISE_LOOK_BACK_MS` (10 s).
+- **Behaviour change:** the raise starts at the last calm rest at least 20 degrees off the aim, within `RAISE_LOOK_BACK_MS` of the draw start. `raiseMaxMs` (6 s) bounds the raise from its start to the draw start, and a raise shorter than 0.5 s is not one.
+- **Behaviour change:** the walk back to the rest ends at a release-grade jump: a calm release jolt is not taken for a rest.
+- **Behaviour change:** `idleKeepMs` defaults to `RAISE_LOOK_BACK_MS` (was 6 s), so a raise keeps its 1 s lead. The idle buffer grows from 300 to 500 samples at 50 Hz.
+- **Build:** AGP 9.5.1, as the app, so `-Pwitmotion.local` can include this build.
+
 ### 0.7.0
 
 Adds the raise, phase boundaries, a live phase and the release rotation. Source-compatible except an exhaustive `when` over `ShotPhase`, which needs a `RAISE` branch; **not binary-compatible** for code that calls the constructors of `DetectedShot` (constructor, `copy`), `BowMovementAnalyzer` (new parameters) or `ShotCycleDetector` (`onPhase` sits before `onShotDetected`): such code fails with `NoSuchMethodError` until recompiled. `detectPhases` is unchanged.
@@ -253,7 +270,7 @@ Scores change with L5, the API changes with L6 and L9; the rest are fixes.
 ./gradlew testDebugUnitTest lintDebug
 ```
 
-JDK 21, AGP 9.4.1, Kotlin 2.4.21, compileSdk 36, minSdk 26.
+JDK 21, AGP 9.5.1, Kotlin 2.4.21, compileSdk 36, minSdk 26.
 
 ## References
 
