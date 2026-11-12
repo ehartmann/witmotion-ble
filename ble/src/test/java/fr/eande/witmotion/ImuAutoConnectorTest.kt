@@ -693,20 +693,41 @@ class ImuAutoConnectorTest {
     }
 
     @Test
-    fun `keeper scans start at least 7_5 s apart whatever the pending failures`() = runTest {
+    fun `at most 4 keeper scans start in any 30 s window whatever the pending failures`() = runTest {
         dropped()
 
-        repeat(15) {
+        repeat(40) {
             connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
             runCurrent()
             advanceTimeBy(ImuAutoConnector.KEEP_RETRY_MS)
             runCurrent()
         }
 
-        assertThat(scanStarts.size).isAtLeast(3)
-        scanStarts.map { it.first }.zipWithNext().forEach { (a, b) ->
-            assertThat(b - a).isAtLeast(ImuAutoConnector.KEEP_SCAN_MIN_GAP_MS)
+        val starts = scanStarts.map { it.first }
+        assertThat(starts.size).isAtLeast(5)
+        for (from in 0L..60_000L step 1_000L) {
+            assertThat(starts.count { it in from until from + 30_000L }).isAtMost(4)
         }
+    }
+
+    @Test
+    fun `a pending connect that comes up at link level then fails is re-issued with a scan, and a sighting connects directly`() = runTest {
+        dropped()
+        pendingWaiting = false
+        advanceTimeBy(2_500)
+        connectionState.value = ImuSensorManager.ConnectionState.DISCONNECTED
+        runCurrent()
+        pendingWaiting = true
+        advanceTimeBy(ImuAutoConnector.KEEP_RETRY_MS)
+        runCurrent()
+
+        verify(exactly = 2) { sensorManager.connectByAddress(kept, "WT9011DCL", true) }
+        verify(exactly = 2) { sensorManager.scanFor(listOf(kept), any()) }
+
+        discovered.value = listOf(keptDevice)
+        runCurrent()
+
+        verify(exactly = 1) { sensorManager.connectByAddress(kept, "WT9011DCL", false) }
     }
 
     @Test
@@ -818,5 +839,17 @@ class ImuAutoConnectorTest {
         connector.stopKeeping()
 
         verify(exactly = 1) { sensorManager.disconnect() }
+    }
+
+    @Test
+    fun `stopKeeping never disconnects an established link`() = runTest {
+        val connector = dropped()
+        discovered.value = listOf(keptDevice)
+        runCurrent()
+        every { sensorManager.isConnected() } returns true
+
+        connector.stopKeeping()
+
+        verify(exactly = 0) { sensorManager.disconnect() }
     }
 }
