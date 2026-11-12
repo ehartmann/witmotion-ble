@@ -62,6 +62,27 @@ class ImuSensorManagerConnectTest {
         assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
     }
 
+    @Test fun `a pending connect refused by a SecurityException is dropped at once, a direct one is not`() {
+        h.manager.openGatt = { _, _ -> throw SecurityException("no BLUETOOTH_CONNECT") }
+        h.manager.connectByAddress(device.address, pending = true)
+        assertThat(drops).containsExactly(LinkDrop(null, DropCause.LINK_LOST, null))
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+        assertThat(h.manager.pendingConnectWaiting).isFalse()
+
+        drops.clear()
+        h.manager.connectByAddress(device.address)
+        h.idle(25_000)
+        assertThat(drops).isEmpty()
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+    }
+
+    @Test fun `a pending connect to an invalid address is dropped at once`() {
+        h.manager.connectByAddress("not an address", pending = true)
+        assertThat(drops).containsExactly(LinkDrop(null, DropCause.LINK_LOST, null))
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.DISCONNECTED)
+        assertThat(h.manager.pendingConnectWaiting).isFalse()
+    }
+
     @Test fun `the stack ending a waiting pending connect is one drop and nothing is left to cancel`() {
         h.manager.connectByAddress(device.address, pending = true)
         h.manager.gattCallback.onConnectionStateChange(h.gatt, 133, BluetoothProfile.STATE_DISCONNECTED)

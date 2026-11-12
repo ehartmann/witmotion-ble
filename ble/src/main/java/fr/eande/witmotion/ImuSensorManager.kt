@@ -446,10 +446,13 @@ public class ImuSensorManager(private val context: Context) {
         writeCharacteristic = null
         gattOps.clear()
 
+        fun refuse() {
+            pendingConnect = false
+            if (pending) dropLink(null) else _connectionState.value = ConnectionState.DISCONNECTED
+        }
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bluetoothManager?.adapter ?: run {
-            pendingConnect = false
-            _connectionState.value = ConnectionState.DISCONNECTED
+            refuse()
             return
         }
         val bleDevice = try {
@@ -460,23 +463,18 @@ public class ImuSensorManager(private val context: Context) {
             }
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, "Invalid BLE address", e)
-            pendingConnect = false
-            _connectionState.value = ConnectionState.DISCONNECTED
+            refuse()
             return
         }
 
         val runConnect = Runnable {
             try {
                 gatt = openGatt(bleDevice, pending)
-                if (gatt == null && pending) {
-                    pendingConnect = false
-                    dropLink(null)
-                }
+                if (gatt == null && pending) refuse()
                 Log.d(TAG, "Connecting to ${device.name}...")
             } catch (e: SecurityException) {
                 Log.e(TAG, "connectGatt denied (missing runtime permission?)", e)
-                pendingConnect = false
-                _connectionState.value = ConnectionState.DISCONNECTED
+                refuse()
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -501,7 +499,8 @@ public class ImuSensorManager(private val context: Context) {
      * With [pending], Android keeps the request open until the sensor is back in range: the state stays
      * CONNECTING with no give-up, and the 20 s connect watchdog starts only once the link is up.
      * Android can end a pending request without a callback (for example when Bluetooth is turned off and
-     * on), so a caller should renew it periodically.
+     * on), so a caller should renew it periodically. A pending request that cannot be opened (no adapter,
+     * invalid address, no GATT, SecurityException) ends at once as DISCONNECTED with `LinkDrop(null, LINK_LOST, null)`.
      */
     public fun connectByAddress(address: String, name: String = "WT9011DCL", pending: Boolean = false) {
         open(ImuSensorDevice(address = address, name = name), pending)
