@@ -125,7 +125,7 @@ public class ImuAutoConnector internal constructor(
      * returns whether the link is up.
      */
     private suspend fun attemptConnect(onlyIfSingle: Boolean = false): Boolean {
-        if (linkBusy()) return sensorManager.isConnected()
+        if (sensorManager.isConnected()) return true
         if (store.getAll().isEmpty()) return false
 
         var connecting = false
