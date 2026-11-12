@@ -317,8 +317,20 @@ public class ImuSensorManager(private val context: Context) {
 
     // --- Scanning ---
 
+    /** True while a scan runs, whoever started it. */
+    internal val scanning: Boolean get() = isScanning
+
+    /** Incremented by each scan that starts: a scan is the caller's own only while this still holds its value. */
+    @Volatile internal var scanGeneration = 0
+        private set
+
     /** Scans for every WitMotion sensor, or only for [addresses]: Android pauses an unfiltered scan while the screen is off. */
     public fun startScan(addresses: Collection<String>? = null) {
+        scanFor(addresses, SCAN_TIMEOUT_MS)
+    }
+
+    /** [startScan] that stops by itself after [timeoutMs]. */
+    internal fun scanFor(addresses: Collection<String>?, timeoutMs: Long) {
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bluetoothManager?.adapter ?: run {
             Log.e(TAG, "Bluetooth not available")
@@ -350,11 +362,12 @@ public class ImuSensorManager(private val context: Context) {
             setScanState(ConnectionState.DISCONNECTED)
             return
         }
+        scanGeneration++
         Log.d(TAG, "BLE scan started")
 
         // Auto-stop after timeout (handler is reusable and cancelable)
         mainHandler.removeCallbacks(scanTimeoutRunnable)
-        mainHandler.postDelayed(scanTimeoutRunnable, SCAN_TIMEOUT_MS)
+        mainHandler.postDelayed(scanTimeoutRunnable, timeoutMs)
     }
 
     public fun stopScan() {

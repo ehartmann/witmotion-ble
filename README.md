@@ -72,7 +72,8 @@ connector.tryAutoConnect(onlyIfSingle = true)  // only when a single registered 
                                                // returns the attempt (or the one in flight), null when
                                                // connected, connecting or nothing is registered
 connector.keep(address, name)                  // during a session: reconnect to this sensor after any drop,
-                                               // by pending connects, with no limit and no scan
+                                               // by pending connects with no limit, plus a scan on that address:
+                                               // a direct connect as soon as the scan sees it
 connector.stopKeeping()                        // ends it; a link that is up stays up
 sensor.connectByAddress(address, pending = true)  // Android auto connect: waits for the sensor, no 20 s limit
 sensor.pendingConnectWaiting                   // true while that pending connect waits; false once the link is up (still CONNECTING while set up)
@@ -106,7 +107,7 @@ last delivery may be an older phase (a HOLD from the BLE thread), so reset the c
 recording stops. HOLD means calm after a movement, not aiming: a lowered bow at rest also reads HOLD,
 so check the tilt.
 
-`ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect, unless `keep` is active: then it issues pending connects to the kept sensor without limit, and `reconnectEvents` reports `Started` on each drop and `Succeeded` when the link is back, never `Exhausted`. Its
+`ImuAutoConnector` also reconnects, up to three times, after an unexpected disconnect, unless `keep` is active: then it issues pending connects to the kept sensor without limit, with a scan filtered on its address that turns into a direct connect as soon as the sensor is seen (continuous for 2 minutes after a drop, then 10 s after each renewal; a scan another component starts meanwhile returns early and sees only the kept sensor until the keeper's scan ends), and `reconnectEvents` reports `Started` on each drop and `Succeeded` when the link is back, never `Exhausted`. Its
 scans are filtered on the registered sensors, so they keep running with the screen off.
 
 The app requests the runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
