@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("fr.eande.witmotion:archery:0.8.1") // pulls :ble; or fr.eande.witmotion:ble alone
+implementation("fr.eande.witmotion:archery:0.8.2") // pulls :ble; or fr.eande.witmotion:ble alone
 ```
 
 To develop an app against a local checkout instead, add to its `settings.gradle.kts`
@@ -44,12 +44,12 @@ and build with `-Pwitmotion.local`; the included build then needs the same AGP v
 ### Releasing
 
 ```bash
-git tag v0.8.1 && git push origin v0.8.1
+git tag v0.8.2 && git push origin v0.8.2
 ```
 
 The Release workflow runs the unit tests and lint, builds the AARs with that version and creates
 the release, its notes listing the commits since the previous tag. Locally:
-`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.8.1` writes the same
+`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.8.2` writes the same
 files to `build/release-repo/`.
 
 ### API
@@ -202,6 +202,14 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 (as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Changelog
+
+### 0.8.2
+
+Fixes three rare connect cases. Public API unchanged: binary-compatible with 0.8.1.
+
+- **Behaviour change:** every refusal of a pending connect (`connectByAddress(..., pending = true)`) that cannot be opened ends as `DISCONNECTED` with `LinkDrop(null, LINK_LOST, null)`. This covers no adapter, an invalid address, a `SecurityException` and no GATT. Before, only the no-GATT refusal emitted the drop. A direct connect's refusals are unchanged.
+- **Fix:** a connect called off the main thread posts its GATT open. That post now opens nothing when a `disconnect()` or a newer connect runs first. Before, it still opened a GATT over the newer one, or, when refused, cleared the newer request's `pendingConnectWaiting`.
+- **Fix:** an auto-connect attempt (`tryAutoConnect`, `retryAfterUnexpectedDisconnect`) never replaces a link that is up or being set up when it would connect. This holds both during its scan and after it. The attempt then returns whether the link is up, so a retry no longer ends `Exhausted` on a live link. A pending connect that still waits may still be replaced, as before.
 
 ### 0.8.1
 
