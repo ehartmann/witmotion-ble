@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("fr.eande.witmotion:archery:0.7.0") // pulls :ble; or fr.eande.witmotion:ble alone
+implementation("fr.eande.witmotion:archery:0.8.0") // pulls :ble; or fr.eande.witmotion:ble alone
 ```
 
 To develop an app against a local checkout instead, add to its `settings.gradle.kts`
@@ -44,12 +44,12 @@ and build with `-Pwitmotion.local`; the included build then needs the same AGP v
 ### Releasing
 
 ```bash
-git tag v0.7.0 && git push origin v0.7.0
+git tag v0.8.0 && git push origin v0.8.0
 ```
 
 The Release workflow runs the unit tests and lint, builds the AARs with that version and creates
 the release, its notes listing the commits since the previous tag. Locally:
-`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.7.0` writes the same
+`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.8.0` writes the same
 files to `build/release-repo/`.
 
 ### API
