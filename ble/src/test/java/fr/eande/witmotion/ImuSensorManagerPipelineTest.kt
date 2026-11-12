@@ -369,9 +369,12 @@ class ImuSensorManagerPipelineTest {
         val scope = CoroutineScope(Dispatchers.Unconfined)
         val drops = mutableListOf<LinkDrop>()
         scope.launch { h.manager.unexpectedDisconnects.collect { drops += it } }
+        h.manager.connect(device)
+        h.injectGatt()
         h.connect()
 
         h.manager.disconnect()
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 0, BluetoothProfile.STATE_DISCONNECTED)
 
         assertThat(drops).isEmpty()
         scope.cancel()
