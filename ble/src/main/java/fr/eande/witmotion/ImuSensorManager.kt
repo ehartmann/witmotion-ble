@@ -81,6 +81,9 @@ public class ImuSensorManager(private val context: Context) {
         private const val DISCOVERY_RETRY_MS = 500L
         private const val CONNECT_TIMEOUT_MS = 20_000L
         private const val NO_STREAM_TIMEOUT_MS = 5_000L
+        internal const val STREAM_TIMEOUT_MS = 1_500L
+        internal const val STREAM_CHECK_MS = 250L
+        internal const val PROBE_TIMEOUT_MS = 1_000L
         // WitMotion's SDK waits 100 ms after the unlock and after each config write
         private const val COMMAND_SPACING_MS = 100L
 
@@ -180,6 +183,9 @@ public class ImuSensorManager(private val context: Context) {
     private val recordingClock = AtomicReference(RecordingClock(0L, Long.MIN_VALUE))
     private val failedListeners: MutableSet<Any> = ConcurrentHashMap.newKeySet()
     @Volatile private var streamSeen = false
+    @Volatile private var notifyCccd: BluetoothGattDescriptor? = null
+    @Volatile private var lastPacketAt = 0L
+    @Volatile private var streamWatched = false
     @Volatile private var discoveryRetried = false
     @Volatile private var rateRewritten = false
     @Volatile private var isScanning = false
@@ -196,6 +202,41 @@ public class ImuSensorManager(private val context: Context) {
             Log.e(TAG, "No notification $NO_STREAM_TIMEOUT_MS ms after enabling them")
             dropLink(gatt)
         }
+    }
+
+    private val streamWatchdog = object : Runnable {
+        override fun run() {
+            val g = gatt
+            val cccd = notifyCccd
+            if (g == null || cccd == null) {
+                streamWatched = false
+                return
+            }
+            if (SystemClock.elapsedRealtime() - lastPacketAt < STREAM_TIMEOUT_MS) {
+                mainHandler.postDelayed(this, STREAM_CHECK_MS)
+                return
+            }
+            Log.w(TAG, "No sample for $STREAM_TIMEOUT_MS ms, probing the link")
+            mainHandler.postDelayed(probeTimeout, PROBE_TIMEOUT_MS)
+            gattOps.enqueue(g) {
+                val started = try { it.readDescriptor(cccd) } catch (e: Exception) { false }
+                if (!started) dropLink(it)
+                started
+            }
+        }
+    }
+    private val probeTimeout: Runnable = Runnable { dropLink(gatt) }
+
+    private fun startStreamWatch() {
+        if (streamWatched) return
+        streamWatched = true
+        mainHandler.postDelayed(streamWatchdog, STREAM_CHECK_MS)
+    }
+
+    private fun stopStreamWatch() {
+        streamWatched = false
+        mainHandler.removeCallbacks(streamWatchdog)
+        mainHandler.removeCallbacks(probeTimeout)
     }
 
     /**
@@ -366,6 +407,7 @@ public class ImuSensorManager(private val context: Context) {
         _connectionState.value = ConnectionState.CONNECTING
         mainHandler.removeCallbacks(connectWatchdog)
         mainHandler.removeCallbacks(noStreamWatchdog)
+        stopStreamWatch()
         mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
         clockChecks.abort()
 
@@ -432,6 +474,7 @@ public class ImuSensorManager(private val context: Context) {
         mainHandler.removeCallbacks(batteryRefresh)
         mainHandler.removeCallbacks(connectWatchdog)
         mainHandler.removeCallbacks(noStreamWatchdog)
+        stopStreamWatch()
         _connectionState.value = ConnectionState.DISCONNECTED
         clockChecks.abort()
         _connectedDevice.value = null
@@ -448,6 +491,7 @@ public class ImuSensorManager(private val context: Context) {
                     rateRewritten = false
                     streamSeen = false
                     lastSampleAt = null
+                    stopStreamWatch()
                     gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -464,6 +508,7 @@ public class ImuSensorManager(private val context: Context) {
                     mainHandler.removeCallbacks(batteryRefresh)
                     mainHandler.removeCallbacks(connectWatchdog)
                     mainHandler.removeCallbacks(noStreamWatchdog)
+                    stopStreamWatch()
                     if (this@ImuSensorManager.gatt == gatt) {
                         try {
                             gatt.close()
@@ -519,6 +564,7 @@ public class ImuSensorManager(private val context: Context) {
             Log.d(TAG, "High connection priority requested: $fast")
 
             writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID)
+            notifyCccd = cccd
 
             gattOps.clear()
             gatt.setCharacteristicNotification(notifyChar, true)
@@ -544,6 +590,20 @@ public class ImuSensorManager(private val context: Context) {
                 mainHandler.postDelayed(noStreamWatchdog, NO_STREAM_TIMEOUT_MS)
             }
             gattOps.next(gatt)
+        }
+
+        @Deprecated("Deprecated in API 33+, kept for backward compatibility with minSdk 26")
+        override fun onDescriptorRead(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) = probeAnswered(gatt)
+
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+        override fun onDescriptorRead(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int, value: ByteArray) =
+            probeAnswered(gatt)
+
+        /** The link answers while no sample comes: the sensor's stream is silent, not the link lost. */
+        private fun probeAnswered(gatt: BluetoothGatt) {
+            if (this@ImuSensorManager.gatt != gatt) return
+            gattOps.next(gatt)
+            dropLink(gatt, DropCause.STREAM_SILENT)
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
@@ -637,6 +697,8 @@ public class ImuSensorManager(private val context: Context) {
                     }
                 }
                 lastSampleAt = samples.last().timestamp
+                lastPacketAt = SystemClock.elapsedRealtime()
+                startStreamWatch()
                 _lastSample.value = samples.last()
             }
         }
