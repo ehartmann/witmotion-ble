@@ -156,7 +156,9 @@ public class BowMovementAnalyzer(
      * [raiseLookBackMs]. The calm at the aim between the raise and the draw does not stop that walk. The
      * raise lasts from there to the draw start, at least [raiseMinMs] and at most [raiseMaxMs]; a longer
      * one is bow handling, and its start is unknown. So is the start when the walk finds no such rest in
-     * time, reaches the first sample, or crosses a link gap (over 1 s without samples). A DRAW segment that
+     * time, reaches the first sample, crosses a link gap (over 1 s without samples), or meets a release
+     * (an acceleration jump over [releaseAccelThreshold] in the 100 ms window of a sample): a raise never
+     * contains one, and the jolt of a premature release reads as a calm sample off the aim. A DRAW segment that
      * begins more than [raiseEndTiltDeg] off the aim has its draw start where the tilt comes within it, and
      * no raise unless that happens; its draw start does not depend on the raise.
      */
@@ -179,6 +181,7 @@ public class BowMovementAnalyzer(
         var j = drawStart - 1
         while (j >= 0) {
             if (t(drawStart) - t(j) > raiseLookBackMs || t(j + 1) - t(j) > ShotCycleDetector.MAX_GAP_MS) break
+            if (window(j).any { accelJump(samples, it) > releaseAccelThreshold }) break
             if (!moving(j) && tilt(j) >= raiseMinTiltDeg) { rest = j; break }
             j--
         }

@@ -219,8 +219,8 @@ class DetectionDiagnosticsTest {
             idle(); draw(); hold(1_000); draw(300)                       // NO_SPIKE
             idle(); draw(); hold(1_000); weakSpike(); hold(500); draw(300) // SPIKE_TOO_WEAK
             shot()
-            shot(holdMs = 2_000)
             idle(2_000); draw(); hold(300); release(); hold(1_500); draw(300) // HOLD_TOO_SHORT
+            shot(holdMs = 2_000)
         }
 
         val report = s.explain()

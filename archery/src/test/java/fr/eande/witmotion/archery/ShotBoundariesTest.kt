@@ -137,6 +137,18 @@ class ShotBoundariesTest {
     }
 
     @Test
+    fun `a calm release jolt is not a rest`() {
+        val jolt = ImuSample(500, acceleration = floatArrayOf(5f, 2f, 3f), gyroscope = floatArrayOf(1f, 0f, 0f))
+        val joltThenDraw = stretch(0, 500, gyro = 1f) + jolt + stretch(520, 2_000, gyro = 1f) + drawToRelease(2_520)
+        val joltThenRestThenRaise = stretch(0, 500, gyro = 1f) + jolt + stretch(520, 500, gyro = 1f) +
+            stretch(1_020, 1_000, gyro = 0f) { 60.0 } + rise(2_020) + drawToRelease(5_020)
+
+        assertThat(analyzer.shotBoundaries(joltThenDraw)!!.raiseStartIndex).isNull()
+        val b = analyzer.shotBoundaries(joltThenRestThenRaise)!!
+        assertThat(joltThenRestThenRaise[b.raiseStartIndex!!].timestamp).isIn(2_000L..2_040L)
+    }
+
+    @Test
     fun `raise and draw in one movement end the raise at raiseEnd, with no raiseEnd there is no raise`() {
         val b = analyzer.shotBoundaries(blended)!!
         assertThat(b.drawStartIndex).isGreaterThan(b.raiseStartIndex!!)
