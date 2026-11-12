@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.update
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /** Why a link that was up went down without a disconnect() call. */
@@ -423,7 +424,7 @@ public class ImuSensorManager(private val context: Context) {
     public fun connect(device: ImuSensorDevice): Unit = open(device, pending = false)
 
     private fun open(device: ImuSensorDevice, pending: Boolean) {
-        val request = ++connectRequest
+        val request = connectRequest.incrementAndGet()
         stopScan()
         pendingConnect = pending
         userInitiatedDisconnect = false
@@ -470,7 +471,7 @@ public class ImuSensorManager(private val context: Context) {
 
         val runConnect = Runnable {
             // Posted from another thread, it may run after a disconnect or a newer connect: it then opens nothing
-            if (request != connectRequest) return@Runnable
+            if (request != connectRequest.get()) return@Runnable
             try {
                 gatt = openGatt(bleDevice, pending)
                 if (gatt == null && pending) refuse()
@@ -488,7 +489,7 @@ public class ImuSensorManager(private val context: Context) {
     }
 
     @Volatile private var pendingConnect = false
-    @Volatile private var connectRequest = 0
+    private val connectRequest = AtomicInteger()
 
     internal var openGatt: (device: BluetoothDevice, autoConnect: Boolean) -> BluetoothGatt? = { device, autoConnect ->
         // The API 37 settings-based overload can replace this once minSdk reaches 37
@@ -531,7 +532,7 @@ public class ImuSensorManager(private val context: Context) {
     }
 
     public fun disconnect() {
-        connectRequest++
+        connectRequest.incrementAndGet()
         pendingConnect = false
         userInitiatedDisconnect = true
         gatt?.disconnect()
