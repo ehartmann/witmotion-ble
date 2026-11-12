@@ -490,8 +490,16 @@ public class ImuSensorManager(private val context: Context) {
         open(ImuSensorDevice(address = address, name = name), pending)
     }
 
-    /** True while the last pending connect still waits for the sensor, before the link comes up. */
-    internal val pendingConnectWaiting: Boolean get() = pendingConnect
+    /**
+     * True while a [connectByAddress] request with `pending = true` waits for the sensor. Set by that call;
+     * cleared when the link comes up (STATE_CONNECTED), by [disconnect], by any other connect, when the
+     * stack ends the request, and when the request cannot be opened.
+     *
+     * The state is CONNECTING both while the request waits and while the link, once up, is being set up
+     * (service discovery, notification enable): this tells them apart, so a caller does not start a direct
+     * connect that would close the GATT being set up.
+     */
+    public val pendingConnectWaiting: Boolean get() = pendingConnect
 
     /** Ends the last connect if it is a pending one; true when it did. */
     internal fun cancelPendingConnect(): Boolean {

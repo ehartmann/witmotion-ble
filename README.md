@@ -75,6 +75,7 @@ connector.keep(address, name)                  // during a session: reconnect to
                                                // by pending connects, with no limit and no scan
 connector.stopKeeping()                        // ends it; a link that is up stays up
 sensor.connectByAddress(address, pending = true)  // Android auto connect: waits for the sensor, no 20 s limit
+sensor.pendingConnectWaiting                   // true while that pending connect waits; false once the link is up (still CONNECTING while set up)
 sensor.unexpectedDisconnects                   // SharedFlow<LinkDrop>: address, cause (LINK_LOST, STREAM_SILENT), lastSampleAt
 ```
 

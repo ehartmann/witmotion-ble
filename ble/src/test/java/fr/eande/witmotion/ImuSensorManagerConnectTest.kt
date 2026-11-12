@@ -87,6 +87,16 @@ class ImuSensorManagerConnectTest {
         assertThat(drops.map { it.cause }).containsExactly(DropCause.LINK_LOST)
     }
 
+    @Test fun `pendingConnectWaiting tells a waiting pending connect from a link being set up`() {
+        h.manager.connectByAddress(device.address, pending = true)
+        assertThat(h.manager.pendingConnectWaiting).isTrue()
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+        assertThat(h.manager.connectionState.value).isEqualTo(ImuSensorManager.ConnectionState.CONNECTING)
+        assertThat(h.manager.pendingConnectWaiting).isFalse()
+        h.manager.connectByAddress(device.address)
+        assertThat(h.manager.pendingConnectWaiting).isFalse()
+    }
+
     @Test fun `a direct connect still asks for a direct link`() {
         h.manager.connectByAddress(device.address)
         assertThat(opened.single().second).isFalse()
