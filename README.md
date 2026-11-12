@@ -89,6 +89,7 @@ val detector = ShotCycleDetector(
 )
 val b = analyzer.shotBoundaries(samples)        // ShotBoundaries: raise, draw, hold, release indices; null without them
 val rot = analyzer.releaseRotation(samples, releaseIndex)  // ReleaseRotation: amplitude, peak, stop time
+ShotCycleDetector.RAISE_LOOK_BACK_MS             // 10 s: how far before the draw start the raise's rest is looked for; the default idleKeepMs
 analyzer.raiseEndTiltDeg                        // 10°: within this tilt of the aim, the bow is up (a raise ends there)
 ```
 

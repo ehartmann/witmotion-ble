@@ -89,6 +89,26 @@ class ShotCycleDetectorTest {
     }
 
     @Test
+    fun `a 5 s raise under 20 deg per s and a 0_8 s pause keep their 1 s lead only with the 10 s buffer`() {
+        val draw = 2_000L + 5_000 + 800
+        val stream = stretch(0, 2_000, 0f) { 60.0 } + stretch(2_000, 5_000, 15f) { dt -> 60.0 * (1 - dt / 5_000.0) } +
+            stretch(7_000, 800, 0f) + stretch(draw, 2_000, 25f) + stretch(draw + 2_000, 3_000, 1f) +
+            ImuSample(draw + 5_000, acceleration = floatArrayOf(3f, 0f, 1f), gyroscope = floatArrayOf(1f, 0f, 0f)) +
+            stretch(draw + 5_020, 3_100, 2f)
+
+        val shot = detectRealistic(stream)
+        assertThat(shot.raiseStartTimestamp).isNotNull()
+        assertThat(shot.samples.first().timestamp).isEqualTo(shot.raiseStartTimestamp!! - 1_000)
+
+        detectedShots.clear()
+        val short = ShotCycleDetector(BowMovementAnalyzer(), afterReleaseMs = 3_000, idleKeepMs = 6_000) { detectedShots.add(it) }
+        stream.forEach(short::onSample)
+        val cut = detectedShots.single()
+        assertThat(cut.raiseStartTimestamp).isNotNull()
+        assertThat(cut.samples.first().timestamp).isGreaterThan(cut.raiseStartTimestamp!! - 1_000)
+    }
+
+    @Test
     fun `a raise, a pause, then a draw keeps the hold of the aim in the metrics, not the pause`() {
         val shot = detectRealistic(stretch(0, 2_000, 0f) { 60.0 } + raiseToShot(2_000, pauseMs = 1_000))
 
@@ -122,7 +142,7 @@ class ShotCycleDetectorTest {
         }
 
         stream.filter { it.timestamp <= 30_020 }.forEach(detector::onSample)
-        assertThat(detector.bufferedSamples).isEqualTo((30_020 - 18_700) / 20 + 1)   // from 24 700 - 6 000
+        assertThat(detector.bufferedSamples).isEqualTo((30_020 - 14_700) / 20 + 1)   // from 24 700 - 10 000
         stream.filter { it.timestamp > 30_020 }.forEach(detector::onSample)
 
         // Restarted at 30 020; the clock then runs from the raise at 24 700, so all is dropped 30 s later
@@ -311,7 +331,7 @@ class ShotCycleDetectorTest {
         val detector = detector()
         detector.feed(600_000, 0f)                         // 10 minutes connected, at rest
 
-        assertThat(detector.bufferedSamples).isEqualTo(6_000 / 20 + 1)    // the last 6 s, for a raise before the draw
+        assertThat(detector.bufferedSamples).isEqualTo(10_000 / 20 + 1)    // the last 10 s, for a raise before the draw
     }
 
     @Test

@@ -13,10 +13,11 @@ import fr.eande.witmotion.ImuSample
  * (DRAW -> HOLD -> RELEASE -> FOLLOW_THROUGH) over the buffered samples.
  *
  * All limits are durations, so the behaviour does not depend on the sensor rate. While no draw is
- * in progress only the last [idleKeepMs] are kept, enough for a raise and its pause before the draw,
- * which bounds memory and the phase-detection cost over a long session. A raise too slow to read as a
- * draw (under about 20°/s) must fit in [idleKeepMs] with its pause and the rest before it: a longer one
- * reads unknown, and one within [RAISE_LEAD_MS] of that limit has its samples start at the buffer's start.
+ * in progress only the last [idleKeepMs] are kept, by default [RAISE_LOOK_BACK_MS]: the raise is looked
+ * for that far before the draw start, and the shot keeps [RAISE_LEAD_MS] before it. This bounds memory and
+ * the phase-detection cost over a long session. A raise too slow to read as a draw (under about 20°/s)
+ * must fit in [idleKeepMs] with its pause and the rest before it: a longer one reads unknown, and one
+ * within [RAISE_LEAD_MS] of that limit has its samples start at the buffer's start.
  * When no release comes within [maxDrawMs] of the first draw (the bow handled without shooting, or
  * lowered after the previous shot), detection restarts at the latest draw and keeps [idleKeepMs] before
  * it, so the raise of the shot in progress stays; with no newer draw in the last [maxDrawMs], all is dropped.
@@ -40,7 +41,7 @@ public class ShotCycleDetector(
     private val analyzer: BowMovementAnalyzer = BowMovementAnalyzer(),
     private val afterReleaseMs: Long = 3_000,
     private val maxDrawMs: Long = 30_000,
-    private val idleKeepMs: Long = 6_000,
+    private val idleKeepMs: Long = RAISE_LOOK_BACK_MS,
     private val onPhase: (LivePhase) -> Unit = {},
     private val onShotDetected: (DetectedShot) -> Unit
 ) {
@@ -65,6 +66,11 @@ public class ShotCycleDetector(
     public companion object {
         /** A shot's samples start this long before its raise, or at the oldest sample kept. */
         public const val RAISE_LEAD_MS: Long = 1_000
+
+        /**
+         * How far before the draw start the raise's rest is looked for. Readers of stored samples read this far.
+         */
+        public const val RAISE_LOOK_BACK_MS: Long = 10_000
 
         /**
          * A longer silence between two samples is a link gap: the live phase restarts from IDLE, and
