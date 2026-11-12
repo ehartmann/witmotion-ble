@@ -112,13 +112,84 @@ class ShotBoundariesTest {
     }
 
     @Test
-    fun `a pause longer than raisePauseMaxMs before the draw keeps no raise`() {
-        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) + stretch(4_000, 2_500, gyro = 0f) + drawToRelease(6_500)
+    fun `a pause at the aim that makes the raise longer than 6 s keeps no raise`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000) + stretch(4_000, 3_500, gyro = 0f) + drawToRelease(7_500)
 
         val b = analyzer.shotBoundaries(samples)!!
 
         assertThat(b.raiseStartIndex).isNull()
-        assertThat(b.drawStartIndex).isEqualTo(samples.indexAt(6_500))
+        assertThat(b.drawStartIndex).isEqualTo(samples.indexAt(7_500))
+    }
+
+    @Test
+    fun `session 39's shape - the raise runs from the rest's end to the draw start, across the calm at the aim`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 25.0 } +
+            stretch(1_000, 1_500, gyro = 50f) { dt -> 25.0 - 20.0 * dt / 1_500 } +
+            stretch(2_500, 1_100, gyro = 0f) { 5.0 } +
+            stretch(3_600, 200, gyro = 12f) { 5.0 } +
+            drawToRelease(3_800)
+
+        val b = analyzer.shotBoundaries(samples)!!
+
+        assertThat(b.raiseStartIndex).isEqualTo(samples.indexAt(1_000))
+        assertThat(b.drawStartIndex).isEqualTo(samples.indexAt(3_800))
+        assertThat(samples[b.drawStartIndex].timestamp - samples[b.raiseStartIndex!!].timestamp).isIn(2_790L..2_810L)
+    }
+
+    @Test
+    fun `raise and draw in one movement end the raise at raiseEnd, with no raiseEnd there is no raise`() {
+        val b = analyzer.shotBoundaries(blended)!!
+        assertThat(b.drawStartIndex).isGreaterThan(b.raiseStartIndex!!)
+        assertThat(blended[b.drawStartIndex].timestamp - blended[b.raiseStartIndex!!].timestamp).isIn(2_480L..2_620L)
+
+        // The draw never comes within 10 degrees of the aim before the hold
+        val neverThere = stretch(0, 1_000, gyro = 0f) { 60.0 } +
+            stretch(1_000, 2_000, gyro = 25f) { dt -> 60.0 - 40.0 * dt / 2_000 } +
+            stretch(3_000, 3_000, gyro = 1f) +
+            ImuSample(6_000, acceleration = floatArrayOf(3f, 0f, 1f), gyroscope = floatArrayOf(1f, 0f, 0f)) +
+            stretch(6_020, 1_000, gyro = 2f)
+        assertThat(analyzer.shotBoundaries(neverThere)!!.raiseStartIndex).isNull()
+    }
+
+    @Test
+    fun `no calm rest 20 degrees off within 10 s - no raise`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000, ms = 1_000) + stretch(2_000, 10_000, gyro = 0f) + drawToRelease(12_000)
+
+        assertThat(analyzer.shotBoundaries(samples)!!.raiseStartIndex).isNull()
+    }
+
+    @Test
+    fun `a rest 6_5 s before the draw start - no raise`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000, ms = 1_000) + stretch(2_000, 5_500, gyro = 0f) + drawToRelease(7_500)
+
+        assertThat(analyzer.shotBoundaries(samples)!!.raiseStartIndex).isNull()
+    }
+
+    @Test
+    fun `a rest 0_4 s before the draw start - no raise`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } + rise(1_000, ms = 400) + drawToRelease(1_400)
+
+        assertThat(analyzer.shotBoundaries(samples)!!.raiseStartIndex).isNull()
+    }
+
+    @Test
+    fun `a gap over 1 s between the rest and the draw - no raise`() {
+        val gapped = raisePauseDraw.filter { it.timestamp !in 2_000L until 3_500L }
+
+        assertThat(analyzer.shotBoundaries(gapped)!!.raiseStartIndex).isNull()
+    }
+
+    @Test
+    fun `a short calm stop at 30 degrees during the raise - the raise starts after it`() {
+        val samples = stretch(0, 1_000, gyro = 0f) { 60.0 } +
+            stretch(1_000, 1_000, gyro = 25f) { dt -> 60.0 - 30.0 * dt / 1_000 } +
+            stretch(2_000, 500, gyro = 0f) { 30.0 } +
+            stretch(2_500, 1_500, gyro = 25f) { dt -> 30.0 * (1 - dt / 1_500.0) } +
+            drawToRelease(4_000)
+
+        val b = analyzer.shotBoundaries(samples)!!
+
+        assertThat(samples[b.raiseStartIndex!!].timestamp).isIn(2_480L..2_520L)
     }
 
     @Test

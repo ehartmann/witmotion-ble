@@ -23,8 +23,9 @@ public data class LivePhase(val phase: ShotPhase, val sinceTimestamp: Long)
 
 /**
  * Sample indices where a shot's phases start, from [BowMovementAnalyzer.shotBoundaries].
- * [raiseStartIndex] is null when no raise is found (the bow was already up), the samples begin during it,
- * or it lasts longer than `raiseMaxMs` (bow handling).
+ * [raiseStartIndex] is null when no raise is found: no calm rest 20° off the aim within 10 s before the draw
+ * start (the bow was already up), a link gap or the first sample comes first, or the raise, from that rest to
+ * the draw start, lasts under 0.5 s or over `raiseMaxMs` (bow handling).
  */
 public data class ShotBoundaries(
     val raiseStartIndex: Int?,

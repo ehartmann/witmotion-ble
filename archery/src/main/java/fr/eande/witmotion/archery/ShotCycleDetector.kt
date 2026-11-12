@@ -67,6 +67,11 @@ public class ShotCycleDetector(
         public const val RAISE_LEAD_MS: Long = 1_000
 
         /**
+         * How far before the draw start the raise's rest is looked for. Readers of stored samples read this far.
+         */
+        public const val RAISE_LOOK_BACK_MS: Long = 10_000
+
+        /**
          * A longer silence between two samples is a link gap: the live phase restarts from IDLE, and
          * [BowMovementAnalyzer.shotBoundaries] does not date a raise across it.
          */
