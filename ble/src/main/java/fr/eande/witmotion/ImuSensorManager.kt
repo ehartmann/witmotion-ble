@@ -317,8 +317,14 @@ public class ImuSensorManager(private val context: Context) {
 
     // --- Scanning ---
 
-    /** Scans for every WitMotion sensor, or only for [addresses]: Android pauses an unfiltered scan while the screen is off. */
-    public fun startScan(addresses: Collection<String>? = null) {
+    /** True while a scan runs, whoever started it. */
+    internal val scanning: Boolean get() = isScanning
+
+    /**
+     * Scans for every WitMotion sensor, or only for [addresses]: Android pauses an unfiltered scan while the screen is off.
+     * The scan stops by itself after [timeoutMs].
+     */
+    public fun startScan(addresses: Collection<String>? = null, timeoutMs: Long = SCAN_TIMEOUT_MS) {
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bluetoothManager?.adapter ?: run {
             Log.e(TAG, "Bluetooth not available")
@@ -354,7 +360,7 @@ public class ImuSensorManager(private val context: Context) {
 
         // Auto-stop after timeout (handler is reusable and cancelable)
         mainHandler.removeCallbacks(scanTimeoutRunnable)
-        mainHandler.postDelayed(scanTimeoutRunnable, SCAN_TIMEOUT_MS)
+        mainHandler.postDelayed(scanTimeoutRunnable, timeoutMs)
     }
 
     public fun stopScan() {
