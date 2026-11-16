@@ -121,6 +121,21 @@ class ImuSensorManagerSettingsTest {
         assertThat(h.written.map(::hex)).containsExactlyElementsIn(infoReads + infoReads).inOrder()
     }
 
+    @Test
+    fun `a readInfo waiting on the lock while the link drops returns empty and writes nothing`() = runBlocking<Unit> {
+        linkedUp()
+        val first = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo(timeoutMs = 300) }
+        val second = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo(timeoutMs = 300) }
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+        h.injectGatt()
+        h.forgetWrites()
+
+        assertThat(first.await()).isEqualTo(ImuSensorManager.SensorInfo())
+        val waited = measureTimeMillis { assertThat(second.await()).isEqualTo(ImuSensorManager.SensorInfo()) }
+        assertThat(waited).isLessThan(150)
+        assertThat(h.written).isEmpty()
+    }
+
     @Test   // Review Focus 3
     fun `readInfo reads during a clock check`() = runBlocking<Unit> {
         linkedUp()
@@ -191,6 +206,20 @@ class ImuSensorManagerSettingsTest {
 
         assertThat(saved.await()).isFalse()
         assertThat(h.written).isEmpty()
+    }
+
+    @Test
+    fun `a writer that waited does not write on a link that came back during the wait`() = runBlocking<Unit> {
+        h.connect()
+        h.forgetWrites()
+        val saved = async(start = CoroutineStart.UNDISPATCHED) { h.manager.factoryReset() }
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+        val other = GattHarness(h.manager)
+        other.connect()
+        other.forgetWrites()
+
+        assertThat(saved.await()).isFalse()
+        assertThat(other.written).isEmpty()
     }
 
     @Test

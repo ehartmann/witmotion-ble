@@ -875,6 +875,7 @@ public class ImuSensorManager(private val context: Context) {
     public suspend fun readInfo(timeoutMs: Long = 2_000): SensorInfo {
         if (!isConnected()) return SensorInfo()
         return infoLock.withLock {
+            if (!isConnected()) return@withLock SensorInfo()
             val entries = INFO_REGISTERS.associateWith { CompletableDeferred<List<Int>>() }
             pendingInfo.putAll(entries)
             try {
@@ -1034,8 +1035,9 @@ public class ImuSensorManager(private val context: Context) {
     private suspend fun readyToWrite(): Boolean {
         fun ok() = isConnected() && clockChecks.collector == null
         if (!ok()) return false
+        val g = gatt
         awaitLinkUpRead()
-        return ok()
+        return ok() && gatt === g
     }
 
     /**
