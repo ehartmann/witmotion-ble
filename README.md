@@ -68,6 +68,7 @@ sensor.bandwidth = Bandwidth.suggestedFor(100)  // likewise: filter cut-off (reg
 val info = sensor.readInfo()            // suspend: firmware, temperature, calibration offsets; null where no reply
 sensor.saveConfig()                     // suspend: the live registers to flash
 sensor.forceInstallation()              // suspend: installation saved to flash, restartNeeded raised
+sensor.factoryReset()                   // suspend: factory configuration, then the link-up settings again
 val check = sensor.runClockCheck()      // suspend, 30 s: sensor clock rate, drift against the phone, lost frames
 
 val connector = ImuAutoConnector(sensor, RegisteredImuStore(prefs), scope)
@@ -193,6 +194,8 @@ Each reply carries 8 registers (section 3.1). Not checked on a WT9011DCL.
 
 `saveConfig()` sends the unlock and the save (`FF AA 00 00 00`, section 3.3). The save stores every live register in the flash: rate, bandwidth, algorithm, installation, output content and calibration. `forceInstallation()` sends what the link-up save sends (the installation, the save, a read of `0x23`). It raises `restartNeeded` for the sensor's address. Both, and the writers below, wait up to 2 s for the link-up read, and refuse (`false`, nothing written) while disconnected or during a clock check, since a save then would store the timestamp output content. `true` means queued: the read-backs say what the sensor took. Not checked on a WT9011DCL.
 
+`factoryReset()` sends `FF AA 00 01 00` (register `0x00` SAVE = 1, « restore the default configuration and save », section 3.3). Then it sends the unlock, the link-up settings and their read-backs again, and re-arms the rate rewrite. It raises no restart flag. Not checked on a WT9011DCL: which registers the default configuration covers (calibration offsets, name), and whether the sensor reboots or drops the link.
+
 All GATT writes and reads go through `GattOpQueue`: Android rejects an operation
 issued while another one is in flight.
 
@@ -224,6 +227,7 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 - **New:** `batteryVolts`, register 0x64 in volts (`StateFlow<Float?>`, null until the first reply), updated with `batteryLevel`.
 - **New:** `readInfo()` and `SensorInfo`: the firmware version, the temperature and the calibration offsets, read on demand (the link-up does not change). A field is null when its reply did not come within the timeout. Not checked on a WT9011DCL.
 - **New:** `saveConfig()` (the current registers to the flash) and `forceInstallation()` (`installation` saved, read back, `restartNeeded` raised until `acknowledgeRestart()`). Both wait for the link-up read, and they return `false` with nothing written while disconnected or during a clock check. Not checked on a WT9011DCL.
+- **New:** `factoryReset()`: the sensor's default configuration, saved, then the link-up settings and read-backs again. It re-arms the rate rewrite and raises no restart flag. Not checked on a WT9011DCL.
 
 ### 0.8.3
 

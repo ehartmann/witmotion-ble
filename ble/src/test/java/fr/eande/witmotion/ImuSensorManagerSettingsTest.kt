@@ -204,4 +204,40 @@ class ImuSensorManagerSettingsTest {
         h.manager.acknowledgeRestart()
         assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
     }
+
+    @Test
+    fun `factoryReset writes the reset, then the unlock and the link-up settings with their read-backs, 100 ms apart`() = runBlocking<Unit> {
+        linkedUp()
+        assertThat(h.manager.factoryReset()).isTrue()
+        h.drain()
+
+        val settings = ImuSensorManager.settingsCommands(h.manager.outputRate, h.manager.installation, h.manager.algorithm, h.manager.bandwidth).map(::hex)
+        assertThat(h.written.map(::hex)).containsExactlyElementsIn(listOf(unlock, "FF AA 00 01 00", unlock) + settings).inOrder()
+        assertThat(h.writeTimes.zipWithNext { a, b -> b - a }.all { it >= 100 }).isTrue()
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
+    }
+
+    @Test
+    fun `factoryReset re-arms the rate rewrite`() = runBlocking<Unit> {
+        linkedUp()
+        h.notify(GattHarness.registerReply(0x03, OutputRate.HZ_200.code))
+        h.drain()
+        h.manager.factoryReset()
+        h.drain()
+        h.forgetWrites()
+
+        h.notify(GattHarness.registerReply(0x03, OutputRate.HZ_200.code))
+        h.drain()
+
+        assertThat(h.written.count { it.contentEquals(h.manager.outputRate.command) }).isEqualTo(1)
+    }
+
+    @Test
+    fun `factoryReset refuses while disconnected and during a clock check`() = runBlocking<Unit> {
+        assertThat(h.manager.factoryReset()).isFalse()
+        linkedUp()
+        h.manager.clockChecks.begin()
+        assertThat(h.manager.factoryReset()).isFalse()
+        assertThat(h.written).isEmpty()
+    }
 }

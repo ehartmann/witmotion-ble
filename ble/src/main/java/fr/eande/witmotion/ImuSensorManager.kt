@@ -97,6 +97,7 @@ public class ImuSensorManager(private val context: Context) {
         // 0x69/0xB588 unlocks config writes; the output rate commands are in OutputRate.
         public val UNLOCK: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x69, 0x88.toByte(), 0xB5.toByte())
         public val SAVE_CONFIG: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x00, 0x00)
+        private val FACTORY_RESET: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x01, 0x00)
         // Register read (no unlock needed): the sensor answers with a 55 71 notification
         public val READ_BATTERY: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, ImuDataParser.REG_BATTERY_VOLTAGE.toByte(), 0x00)
         private val INFO_REGISTERS = listOf(0x2E, 0x40, 0x05, 0x0D)
@@ -1053,6 +1054,18 @@ public class ImuSensorManager(private val context: Context) {
         _connectedDevice.value?.address?.let { restartPending += it }
         _linkStats.update { it.copy(restartNeeded = true) }
         sendCommands(installation.command, SAVE_CONFIG, READ_INSTALLATION)
+        return true
+    }
+
+    /**
+     * Restores the sensor's default configuration and saves it, then sends the link-up settings and their
+     * read-backs again and re-arms the rate rewrite. `true` means queued, not taken. `false`, with nothing
+     * written, while disconnected or during a clock check. Not checked on a WT9011DCL.
+     */
+    public suspend fun factoryReset(): Boolean {
+        if (!readyToWrite()) return false
+        enqueuePaced(listOf(UNLOCK, FACTORY_RESET, UNLOCK) + settingsCommands(outputRate, installation, algorithm, bandwidth))
+        rateRewritten = false
         return true
     }
 
