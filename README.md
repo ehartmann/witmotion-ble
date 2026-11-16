@@ -60,6 +60,7 @@ sensor.addSampleListener { sample -> /* BLE thread */ }
 sensor.startScan()                      // discoveredDevices: StateFlow
 sensor.startScan(addresses)             // only these sensors: Android pauses an unfiltered scan, screen off
 sensor.connect(device)                  // connectionState, batteryLevel, lastSample
+sensor.batteryVolts                     // StateFlow<Float?>: the battery in volts, with batteryLevel
 sensor.outputRate = OutputRate.HZ_100   // set on every connect, at once if connected
 sensor.installation = Installation.VERTICAL  // likewise: standing sensor, Y arrow up
 sensor.bandwidth = Bandwidth.suggestedFor(100)  // likewise: filter cut-off (register 0x1F), 20 Hz by default
@@ -176,7 +177,7 @@ WT9011DCL-BT50 protocol at hand; its values come from WitMotion's standard proto
 `0x01` (`1` accelerometer, `7` magnetic field, `0` end) followed by a save
 (`FF AA 00 00 00`). The battery level is register `0x64`, read every minute with
 `FF AA 27 64 00` (no unlock); the `55 71` reply carries the voltage in 0.01 V, mapped to a
-percentage with the protocol's table. The sensor has no GATT Battery Service.
+percentage with the protocol's table. `batteryVolts` gives that voltage itself. The sensor has no GATT Battery Service.
 All GATT writes and reads go through `GattOpQueue`: Android rejects an operation
 issued while another one is in flight.
 
@@ -202,6 +203,10 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 (as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Changelog
+
+### Unreleased
+
+- **New:** `batteryVolts`, register 0x64 in volts (`StateFlow<Float?>`, null until the first reply), updated with `batteryLevel`.
 
 ### 0.8.3
 

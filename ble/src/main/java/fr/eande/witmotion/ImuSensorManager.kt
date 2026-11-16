@@ -125,6 +125,11 @@ public class ImuSensorManager(private val context: Context) {
     private val _batteryLevel = MutableStateFlow(-1) // -1 = unknown
     public val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
 
+    private val _batteryVolts = MutableStateFlow<Float?>(null)
+
+    /** The battery voltage (register 0x64), null until the first reply; set with [batteryLevel], never reset. */
+    public val batteryVolts: StateFlow<Float?> = _batteryVolts.asStateFlow()
+
     /**
      * Since the last connect: which frame format arrives, how much of the stream is not usable,
      * and the link and rate settings actually in effect (null until reported).
@@ -753,6 +758,7 @@ public class ImuSensorManager(private val context: Context) {
             }
             registers.firstOrNull { it.startRegister == ImuDataParser.REG_BATTERY_VOLTAGE }?.let {
                 _batteryLevel.value = ImuDataParser.batteryPercent(it.values[0])
+                _batteryVolts.value = it.values[0] / 100f
                 Log.d(TAG, "Battery: ${it.values[0] / 100f} V, ${_batteryLevel.value}%")
             }
             for ((register, readback) in registerReadbacks) {
