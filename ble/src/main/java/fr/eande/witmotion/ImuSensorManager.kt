@@ -1008,8 +1008,7 @@ public class ImuSensorManager(private val context: Context) {
      */
     public suspend fun runClockCheck(durationMs: Long = 30_000): ClockCheckResult {
         check(isConnected()) { "Not connected" }
-        // the link-up read must be answered first: its save would also store this check's output-content write
-        withTimeoutOrNull(2_000) { while (bootInstallationPending) delay(50) }
+        awaitLinkUpRead()
         check(isConnected()) { "Not connected" }
         val collector = clockChecks.begin()
         timestampSizeLogged = false
@@ -1018,6 +1017,43 @@ public class ImuSensorManager(private val context: Context) {
         } finally {
             clockChecks.end(collector)
         }
+    }
+
+    /** The link-up read must be answered first: its save would also store a later write's effect. */
+    private suspend fun awaitLinkUpRead() {
+        withTimeoutOrNull(2_000) { while (bootInstallationPending) delay(50) }
+    }
+
+    /** False while disconnected or during a clock check: a save then would store the timestamp output content. */
+    private suspend fun readyToWrite(): Boolean {
+        fun ok() = isConnected() && clockChecks.collector == null
+        if (!ok()) return false
+        awaitLinkUpRead()
+        return ok()
+    }
+
+    /**
+     * Saves the live registers (rate, bandwidth, algorithm, installation, output content, calibration)
+     * to the sensor's flash. `true` means queued, not taken: the read-backs say what the sensor holds.
+     * `false`, with nothing written, while disconnected or during a clock check.
+     */
+    public suspend fun saveConfig(): Boolean {
+        if (!readyToWrite()) return false
+        sendCommands(SAVE_CONFIG)
+        return true
+    }
+
+    /**
+     * Writes [installation] and saves it to the flash, as the link-up does when the sensor booted with
+     * another one, reads register 0x23 back and raises [LinkStats.restartNeeded] until [acknowledgeRestart].
+     * `true` means queued, not taken. `false`, with nothing written, while disconnected or during a clock check.
+     */
+    public suspend fun forceInstallation(): Boolean {
+        if (!readyToWrite()) return false
+        _connectedDevice.value?.address?.let { restartPending += it }
+        _linkStats.update { it.copy(restartNeeded = true) }
+        sendCommands(installation.command, SAVE_CONFIG, READ_INSTALLATION)
+        return true
     }
 
     /**

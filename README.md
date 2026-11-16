@@ -66,6 +66,8 @@ sensor.installation = Installation.VERTICAL  // likewise: standing sensor, Y arr
 sensor.bandwidth = Bandwidth.suggestedFor(100)  // likewise: filter cut-off (register 0x1F), 20 Hz by default
                                         // linkStats: frame counts, negotiated interval, rate read back
 val info = sensor.readInfo()            // suspend: firmware, temperature, calibration offsets; null where no reply
+sensor.saveConfig()                     // suspend: the live registers to flash
+sensor.forceInstallation()              // suspend: installation saved to flash, restartNeeded raised
 val check = sensor.runClockCheck()      // suspend, 30 s: sensor clock rate, drift against the phone, lost frames
 
 val connector = ImuAutoConnector(sensor, RegisteredImuStore(prefs), scope)
@@ -189,6 +191,8 @@ percentage with the protocol's table. `batteryVolts` gives that voltage itself. 
 
 Each reply carries 8 registers (section 3.1). Not checked on a WT9011DCL.
 
+`saveConfig()` sends the unlock and the save (`FF AA 00 00 00`, section 3.3). The save stores every live register in the flash: rate, bandwidth, algorithm, installation, output content and calibration. `forceInstallation()` sends what the link-up save sends (the installation, the save, a read of `0x23`). It raises `restartNeeded` for the sensor's address. Both, and the writers below, wait up to 2 s for the link-up read, and refuse (`false`, nothing written) while disconnected or during a clock check, since a save then would store the timestamp output content. `true` means queued: the read-backs say what the sensor took. Not checked on a WT9011DCL.
+
 All GATT writes and reads go through `GattOpQueue`: Android rejects an operation
 issued while another one is in flight.
 
@@ -219,6 +223,7 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 
 - **New:** `batteryVolts`, register 0x64 in volts (`StateFlow<Float?>`, null until the first reply), updated with `batteryLevel`.
 - **New:** `readInfo()` and `SensorInfo`: the firmware version, the temperature and the calibration offsets, read on demand (the link-up does not change). A field is null when its reply did not come within the timeout. Not checked on a WT9011DCL.
+- **New:** `saveConfig()` (the current registers to the flash) and `forceInstallation()` (`installation` saved, read back, `restartNeeded` raised until `acknowledgeRestart()`). Both wait for the link-up read, and they return `false` with nothing written while disconnected or during a clock check. Not checked on a WT9011DCL.
 
 ### 0.8.3
 

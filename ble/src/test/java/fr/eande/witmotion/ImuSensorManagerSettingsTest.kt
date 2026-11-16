@@ -1,5 +1,6 @@
 package fr.eande.witmotion
 
+import android.bluetooth.BluetoothProfile
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
@@ -127,5 +128,80 @@ class ImuSensorManagerSettingsTest {
         answerInfo()
 
         assertThat(info.await()).isEqualTo(fullInfo)
+    }
+
+    private val unlock = "FF AA 69 88 B5"
+    private val save = "FF AA 00 00 00"
+    private val bootSave = listOf(unlock, "FF AA 23 00 00", save, "FF AA 27 23 00")
+
+    private fun relink() {
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+        h.injectGatt()
+        h.connect()
+    }
+
+    @Test
+    fun `saveConfig writes the unlock and the save, and raises no restart flag`() = runBlocking<Unit> {
+        linkedUp()
+        assertThat(h.manager.saveConfig()).isTrue()
+        h.drain()
+
+        assertThat(h.written.map(::hex)).containsExactly(unlock, save).inOrder()
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
+    }
+
+    @Test
+    fun `saveConfig waits for the pending link-up read and is written after its save`() = runBlocking<Unit> {
+        h.connect()
+        h.forgetWrites()
+        val saved = async(start = CoroutineStart.UNDISPATCHED) { h.manager.saveConfig() }
+        delay(200)
+        assertThat(h.written).isEmpty()
+
+        h.notify(GattHarness.registerReply(0x23, 0x01))
+        delay(200)
+        h.drain()
+
+        assertThat(saved.await()).isTrue()
+        assertThat(h.written.map(::hex)).containsExactlyElementsIn(bootSave + listOf(unlock, save)).inOrder()
+    }
+
+    @Test
+    fun `saveConfig and forceInstallation refuse while disconnected and during a clock check`() = runBlocking<Unit> {
+        assertThat(h.manager.saveConfig()).isFalse()
+        assertThat(h.manager.forceInstallation()).isFalse()
+        assertThat(h.written).isEmpty()
+
+        linkedUp()
+        h.manager.clockChecks.begin()
+        assertThat(h.manager.saveConfig()).isFalse()
+        assertThat(h.manager.forceInstallation()).isFalse()
+        assertThat(h.written).isEmpty()
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
+    }
+
+    @Test
+    fun `a link drop during the wait for the link-up read refuses the save`() = runBlocking<Unit> {
+        h.connect()
+        h.forgetWrites()
+        val saved = async(start = CoroutineStart.UNDISPATCHED) { h.manager.saveConfig() }
+        h.manager.disconnect()
+
+        assertThat(saved.await()).isFalse()
+        assertThat(h.written).isEmpty()
+    }
+
+    @Test
+    fun `forceInstallation writes the installation, the save and the read, and raises restartNeeded until acknowledged`() = runBlocking<Unit> {
+        linkedUp()
+        assertThat(h.manager.forceInstallation()).isTrue()
+        h.drain()
+
+        assertThat(h.written.map(::hex)).containsExactlyElementsIn(bootSave).inOrder()
+        assertThat(h.manager.linkStats.value.restartNeeded).isTrue()
+        relink()
+        assertThat(h.manager.linkStats.value.restartNeeded).isTrue()
+        h.manager.acknowledgeRestart()
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
     }
 }
