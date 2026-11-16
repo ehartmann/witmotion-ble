@@ -759,7 +759,6 @@ public class ImuSensorManager(private val context: Context) {
                 val code = registers.firstOrNull { it.startRegister == register }?.values?.get(0) ?: continue
                 Log.d(TAG, "${readback.name} register: 0x%02X (%s)".format(code, readback.describe(code) ?: "?"))
                 if (register == REG_INSTALLATION && bootInstallationPending) {
-                    bootInstallationPending = false
                     onBootInstallation(code)
                 }
                 val mismatch = register == REG_OUTPUT_RATE && OutputRate.fromCode(code) != outputRate
@@ -893,23 +892,28 @@ public class ImuSensorManager(private val context: Context) {
     private fun applySettings() =
         sendCommands(READ_INSTALLATION, *settingsCommands(outputRate, installation, algorithm, bandwidth).toTypedArray())
 
-    /**
-     * The first 0x23 reply of a link answers the read sent before the settings, so it is the installation
-     * the sensor booted with: the sensor answers in order, and the write after it is not applied yet.
-     */
     /** The sensor was switched off and on: clears [LinkStats.restartNeeded] for the connected sensor's address. */
     public fun acknowledgeRestart() {
         _connectedDevice.value?.address?.let { restartPending -= it }
         _linkStats.update { it.copy(restartNeeded = false) }
     }
 
+    /**
+     * The first 0x23 reply of a link answers the read sent before the settings, so it is the installation
+     * the sensor booted with: the sensor answers in order, and the write after it is not applied yet.
+     */
     private fun onBootInstallation(code: Int) {
-        val differs = code != installation.code
-        if (differs) _connectedDevice.value?.address?.let { restartPending += it }
-        _linkStats.update { it.copy(installationAtLinkUp = code, restartNeeded = it.restartNeeded || differs) }
-        if (!differs) return
-        Log.w(TAG, "Booted with installation 0x%02X, not $installation: saving it, the sensor applies it at its next boot".format(code))
-        sendCommands(installation.command, SAVE_CONFIG, READ_INSTALLATION)
+        try {
+            val differs = code != installation.code
+            if (differs) _connectedDevice.value?.address?.let { restartPending += it }
+            _linkStats.update { it.copy(installationAtLinkUp = code, restartNeeded = it.restartNeeded || differs) }
+            if (!differs) return
+            Log.w(TAG, "Booted with installation 0x%02X, not $installation: saving it, the sensor applies it at its next boot".format(code))
+            sendCommands(installation.command, SAVE_CONFIG, READ_INSTALLATION)
+        } finally {
+            // after the save is queued: a waiting clock check starts behind it
+            bootInstallationPending = false
+        }
     }
 
     internal val clockChecks = ClockCheckSlot()
