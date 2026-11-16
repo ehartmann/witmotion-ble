@@ -203,7 +203,9 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 
 ## Changelog
 
-### Unreleased
+### 0.8.3
+
+Keeps the sensor's saved installation as set: the installation is read at link-up, saved when it differs, and a restart flag tells when the sensor must be switched off and on. Public API: two `LinkStats` fields and `acknowledgeRestart()`, binary-compatible with 0.8.2 otherwise.
 
 - **Behaviour change:** at every link-up the manager reads the installation register (0x23) before it writes the settings. The sensor applies the installation saved in its flash at boot (in vertical, its raw accelerations and rotation rates are turned a quarter turn about X), and the read-back after the write always matches, so only this read shows the boot state.
 - **Behaviour change:** when the boot value differs from `installation` (an unknown code counts as different), the manager writes `installation`, saves the configuration to the flash and reads the register again, once per link. When it matches, nothing extra is written or saved.
