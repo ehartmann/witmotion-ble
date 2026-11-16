@@ -65,6 +65,7 @@ sensor.outputRate = OutputRate.HZ_100   // set on every connect, at once if conn
 sensor.installation = Installation.VERTICAL  // likewise: standing sensor, Y arrow up
 sensor.bandwidth = Bandwidth.suggestedFor(100)  // likewise: filter cut-off (register 0x1F), 20 Hz by default
                                         // linkStats: frame counts, negotiated interval, rate read back
+val info = sensor.readInfo()            // suspend: firmware, temperature, calibration offsets; null where no reply
 val check = sensor.runClockCheck()      // suspend, 30 s: sensor clock rate, drift against the phone, lost frames
 
 val connector = ImuAutoConnector(sensor, RegisteredImuStore(prefs), scope)
@@ -178,6 +179,16 @@ WT9011DCL-BT50 protocol at hand; its values come from WitMotion's standard proto
 (`FF AA 00 00 00`). The battery level is register `0x64`, read every minute with
 `FF AA 27 64 00` (no unlock); the `55 71` reply carries the voltage in 0.01 V, mapped to a
 percentage with the protocol's table. `batteryVolts` gives that voltage itself. The sensor has no GATT Battery Service.
+
+`readInfo()` sends, with no unlock and 100 ms apart:
+
+- `FF AA 27 2E 00`: registers `0x2E`/`0x2F`, the version `Version1.Version2H.Version2L` (section 2.11), so `0x0116`/`0x89D8` reads `278.137.216`;
+- `FF AA 27 40 00`: `0x40`, the temperature, signed, in 0.01 °C (section 2.10);
+- `FF AA 27 05 00` and `FF AA 27 0D 00`: `0x05` to `0x0D`, the accelerometer, gyroscope and magnetometer zero biases (section 4), as signed raw values. Their scale, and which calibration writes which, are not documented;
+- the battery read.
+
+Each reply carries 8 registers (section 3.1). Not checked on a WT9011DCL.
+
 All GATT writes and reads go through `GattOpQueue`: Android rejects an operation
 issued while another one is in flight.
 
@@ -207,6 +218,7 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 ### Unreleased
 
 - **New:** `batteryVolts`, register 0x64 in volts (`StateFlow<Float?>`, null until the first reply), updated with `batteryLevel`.
+- **New:** `readInfo()` and `SensorInfo`: the firmware version, the temperature and the calibration offsets, read on demand (the link-up does not change). A field is null when its reply did not come within the timeout. Not checked on a WT9011DCL.
 
 ### 0.8.3
 

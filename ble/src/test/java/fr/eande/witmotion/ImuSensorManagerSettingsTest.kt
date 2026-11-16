@@ -1,9 +1,14 @@
 package fr.eande.witmotion
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import kotlin.system.measureTimeMillis
 
 @RunWith(RobolectricTestRunner::class)
 class ImuSensorManagerSettingsTest {
@@ -27,5 +32,100 @@ class ImuSensorManagerSettingsTest {
 
         assertThat(h.manager.batteryVolts.value).isWithin(1e-4f).of(3.92f)
         assertThat(h.manager.batteryLevel.value).isEqualTo(75)
+    }
+
+    private val infoReads = listOf("FF AA 27 2E 00", "FF AA 27 40 00", "FF AA 27 05 00", "FF AA 27 0D 00", "FF AA 27 64 00")
+
+    /** The four info replies, in another order than the reads. */
+    private fun answerInfo() {
+        h.notify(GattHarness.registerReply(0x0D, 4))
+        h.notify(GattHarness.registerReply(0x40, 0x0992))
+        h.notify(GattHarness.registerReply(0x05, 12, 0xFFFB, 210, 0, 0, 0xFFFF, 30, 0xFFF4))
+        h.notify(GattHarness.registerReply(0x2E, 0x0116, 0x89D8))
+    }
+
+    private val fullInfo = ImuSensorManager.SensorInfo(
+        version1 = 0x0116, version2 = 0x89D8, firmware = "278.137.216", temperatureC = 24.5f,
+        accelOffsets = listOf(12, -5, 210), gyroOffsets = listOf(0, 0, -1), magOffsets = listOf(30, -12, 4),
+    )
+
+    @Test
+    fun `readInfo sends the five reads without the unlock, 100 ms apart, and decodes the replies`() = runBlocking<Unit> {
+        linkedUp()
+        val info = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo() }
+        h.drain()
+        answerInfo()
+
+        assertThat(info.await()).isEqualTo(fullInfo)
+        assertThat(h.written.map(::hex)).containsExactlyElementsIn(infoReads).inOrder()
+        assertThat(h.writeTimes.zipWithNext { a, b -> b - a }.all { it >= 100 }).isTrue()
+    }
+
+    @Test
+    fun `a missing reply leaves its fields null after the timeout, and a negative temperature is signed`() = runBlocking<Unit> {
+        linkedUp()
+        val info = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo(timeoutMs = 300) }
+        h.drain()
+        h.notify(GattHarness.registerReply(0x40, 0xFF38))
+        h.notify(GattHarness.registerReply(0x05, 12, 0xFFFB, 210))
+
+        assertThat(info.await()).isEqualTo(ImuSensorManager.SensorInfo(
+            temperatureC = -2.0f, accelOffsets = listOf(12, -5, 210), gyroOffsets = listOf(0, 0, 0)))
+    }
+
+    @Test
+    fun `readInfo while disconnected returns an empty SensorInfo at once and writes nothing`() = runBlocking<Unit> {
+        val ms = measureTimeMillis { assertThat(h.manager.readInfo()).isEqualTo(ImuSensorManager.SensorInfo()) }
+        assertThat(ms).isLessThan(500)
+        assertThat(h.written).isEmpty()
+    }
+
+    @Test
+    fun `info replies leave linkStats alone`() = runBlocking<Unit> {
+        linkedUp()
+        val before = h.manager.linkStats.value
+        val info = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo() }
+        h.drain()
+        answerInfo()
+        info.await()
+
+        assertThat(h.manager.linkStats.value.copy(notifications = before.notifications)).isEqualTo(before)
+    }
+
+    @Test   // Review Focus 1
+    fun `a link drop while readInfo waits leaves its fields null, even when a reply then comes`() = runBlocking<Unit> {
+        linkedUp()
+        val info = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo(timeoutMs = 300) }
+        h.manager.disconnect()
+        answerInfo()
+
+        assertThat(info.await()).isEqualTo(ImuSensorManager.SensorInfo())
+    }
+
+    @Test   // Review Focus 2
+    fun `two overlapping readInfo calls both get their replies`() = runBlocking<Unit> {
+        linkedUp()
+        val first = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo() }
+        val second = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo() }
+        h.drain()
+        answerInfo()
+        delay(100)   // the first returns, the second sends its reads
+        h.drain()
+        answerInfo()
+
+        assertThat(first.await()).isEqualTo(fullInfo)
+        assertThat(second.await()).isEqualTo(fullInfo)
+        assertThat(h.written.map(::hex)).containsExactlyElementsIn(infoReads + infoReads).inOrder()
+    }
+
+    @Test   // Review Focus 3
+    fun `readInfo reads during a clock check`() = runBlocking<Unit> {
+        linkedUp()
+        h.manager.clockChecks.begin()
+        val info = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo() }
+        h.drain()
+        answerInfo()
+
+        assertThat(info.await()).isEqualTo(fullInfo)
     }
 }

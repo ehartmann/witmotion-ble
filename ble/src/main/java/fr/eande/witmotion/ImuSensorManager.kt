@@ -22,7 +22,10 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -96,6 +99,7 @@ public class ImuSensorManager(private val context: Context) {
         public val SAVE_CONFIG: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x00, 0x00)
         // Register read (no unlock needed): the sensor answers with a 55 71 notification
         public val READ_BATTERY: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, ImuDataParser.REG_BATTERY_VOLTAGE.toByte(), 0x00)
+        private val INFO_REGISTERS = listOf(0x2E, 0x40, 0x05, 0x0D)
         private const val REG_OUTPUT_RATE = 0x03
         public val READ_RATE: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_OUTPUT_RATE.toByte(), 0x00)
         private const val REG_INSTALLATION = 0x23
@@ -165,6 +169,27 @@ public class ImuSensorManager(private val context: Context) {
          */
         val restartNeeded: Boolean = false
     )
+
+    /** What [readInfo] got; null where no reply came. */
+    public data class SensorInfo(
+        /** Register 0x2E, unsigned. */
+        val version1: Int? = null,
+        /** Register 0x2F, unsigned. */
+        val version2: Int? = null,
+        /** `version1.(version2 high byte).(version2 low byte)`; null without the 0x2E reply. */
+        val firmware: String? = null,
+        /** Register 0x40, in degrees Celsius. */
+        val temperatureC: Float? = null,
+        /** Registers 0x05-0x07, signed raw. */
+        val accelOffsets: List<Int>? = null,
+        /** Registers 0x08-0x0A, signed raw. */
+        val gyroOffsets: List<Int>? = null,
+        /** Registers 0x0B-0x0D, signed raw; needs both offset replies. */
+        val magOffsets: List<Int>? = null,
+    )
+
+    private val infoLock = Mutex()
+    private val pendingInfo = ConcurrentHashMap<Int, CompletableDeferred<List<Int>>>()
 
     private class Readback(val name: String, val describe: (Int) -> Any?, val store: (Int) -> (LinkStats) -> LinkStats)
 
@@ -458,6 +483,7 @@ public class ImuSensorManager(private val context: Context) {
         stopStreamWatch()
         if (!pending) mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
         clockChecks.abort()
+        pendingInfo.clear()
 
         gatt?.let { old ->
             try {
@@ -569,6 +595,7 @@ public class ImuSensorManager(private val context: Context) {
         stopStreamWatch()
         _connectionState.value = ConnectionState.DISCONNECTED
         clockChecks.abort()
+        pendingInfo.clear()
         _connectedDevice.value = null
         Log.d(TAG, "Disconnected")
     }
@@ -598,7 +625,10 @@ public class ImuSensorManager(private val context: Context) {
                     dropCause = DropCause.LINK_LOST
                     _connectionState.value = ConnectionState.DISCONNECTED
                     // not a late callback from a GATT that connect() already replaced
-                    if (this@ImuSensorManager.gatt.let { it == null || it == gatt }) clockChecks.abort()
+                    if (this@ImuSensorManager.gatt.let { it == null || it == gatt }) {
+                        clockChecks.abort()
+                        pendingInfo.clear()
+                    }
                     _connectedDevice.value = null
                     writeCharacteristic = null
                     gattOps.clear()
@@ -761,6 +791,7 @@ public class ImuSensorManager(private val context: Context) {
                 _batteryVolts.value = it.values[0] / 100f
                 Log.d(TAG, "Battery: ${it.values[0] / 100f} V, ${_batteryLevel.value}%")
             }
+            registers.forEach { pendingInfo[it.startRegister]?.complete(it.values) }
             for ((register, readback) in registerReadbacks) {
                 val code = registers.firstOrNull { it.startRegister == register }?.values?.get(0) ?: continue
                 Log.d(TAG, "${readback.name} register: 0x%02X (%s)".format(code, readback.describe(code) ?: "?"))
@@ -829,6 +860,45 @@ public class ImuSensorManager(private val context: Context) {
             gattOps.enqueue(g) { sendCommand(command) }
         }
     }
+
+    /**
+     * Reads the firmware version, the temperature and the calibration offsets (no unlock), and the battery on the way.
+     * A field is null when its reply did not come within [timeoutMs]; a call while disconnected returns at once.
+     * Calls are served one at a time.
+     */
+    public suspend fun readInfo(timeoutMs: Long = 2_000): SensorInfo {
+        if (!isConnected()) return SensorInfo()
+        return infoLock.withLock {
+            val entries = INFO_REGISTERS.associateWith { CompletableDeferred<List<Int>>() }
+            pendingInfo.putAll(entries)
+            try {
+                enqueuePaced(INFO_REGISTERS.map(::readRegister) + READ_BATTERY)
+                withTimeoutOrNull(timeoutMs) { entries.values.forEach { it.await() } }
+            } finally {
+                entries.forEach { (register, entry) -> pendingInfo.remove(register, entry) }
+            }
+            decodeInfo { entries.getValue(it).let { d -> if (d.isCompleted) d.getCompleted() else null } }
+        }
+    }
+
+    private fun decodeInfo(reply: (Int) -> List<Int>?): SensorInfo {
+        fun signed(v: Int) = v.toShort().toInt()
+        val version = reply(0x2E)
+        val temperature = reply(0x40)
+        val first = reply(0x05)
+        val mag = reply(0x0D)
+        return SensorInfo(
+            version1 = version?.get(0),
+            version2 = version?.get(1),
+            firmware = version?.let { "${it[0]}.${it[1] ushr 8}.${it[1] and 0xFF}" },
+            temperatureC = temperature?.let { signed(it[0]) / 100f },
+            accelOffsets = first?.let { v -> v.subList(0, 3).map(::signed) },
+            gyroOffsets = first?.let { v -> v.subList(3, 6).map(::signed) },
+            magOffsets = if (first != null && mag != null) listOf(signed(first[6]), signed(first[7]), signed(mag[0])) else null,
+        )
+    }
+
+    private fun readRegister(register: Int) = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, register.toByte(), 0x00)
 
     /** The WT9011DCL has no GATT Battery Service: the level comes from register 0x64 (see deliverNotify). */
     private fun readBattery() = enqueuePaced(listOf(READ_BATTERY))
