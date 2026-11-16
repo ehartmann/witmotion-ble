@@ -22,6 +22,8 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -144,12 +146,17 @@ public class ImuSensorManager(private val context: Context) {
         val bandwidthCode: Int? = null,
         /** Set on the first rate read-back that differs from [outputRate] (the timestamps are suspect), cleared when a later one matches. */
         val rateMismatch: Boolean = false,
-        /** Register 0x23 as the sensor booted with it, read before the settings were written; null until that reply arrives. */
-        val installationAtBoot: Int? = null,
         /**
-         * The boot installation differed from [installation] (an unknown code counts as different): it was saved to the
-         * flash, but the sensor only applies it at its next boot, so until then its raw accelerations and rotation rates
-         * follow the old one. False when the boot read matched or has not been answered.
+         * Register 0x23 as read at link-up, before the manager writes anything: the boot value, unless something wrote
+         * it since the sensor started (another app, an older build). Null until that reply arrives.
+         */
+        val installationAtLinkUp: Int? = null,
+        /**
+         * The manager saved [installation] to the sensor's flash because [installationAtLinkUp] differed (an unknown code
+         * counts as different). The sensor applies it at its next boot: until then its raw accelerations and rotation
+         * rates keep the old installation. A later link-up reads the live register, which already says the new value,
+         * so the flag stays true for that sensor address, on every link-up, until [acknowledgeRestart] or the end of
+         * the process. A restart is invisible to the manager.
          */
         val restartNeeded: Boolean = false
     )
@@ -199,6 +206,7 @@ public class ImuSensorManager(private val context: Context) {
     @Volatile private var discoveryRetried = false
     @Volatile private var rateRewritten = false
     @Volatile private var bootInstallationPending = false
+    private val restartPending: MutableSet<String> = ConcurrentHashMap.newKeySet()
     @Volatile private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScan() }
@@ -565,7 +573,7 @@ public class ImuSensorManager(private val context: Context) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.d(TAG, "Connected, discovering services...")
-                    _linkStats.value = LinkStats()
+                    _linkStats.value = LinkStats(restartNeeded = gatt.device.address in restartPending)
                     discoveryRetried = false
                     rateRewritten = false
                     streamSeen = false
@@ -889,9 +897,16 @@ public class ImuSensorManager(private val context: Context) {
      * The first 0x23 reply of a link answers the read sent before the settings, so it is the installation
      * the sensor booted with: the sensor answers in order, and the write after it is not applied yet.
      */
+    /** The sensor was switched off and on: clears [LinkStats.restartNeeded] for the connected sensor's address. */
+    public fun acknowledgeRestart() {
+        _connectedDevice.value?.address?.let { restartPending -= it }
+        _linkStats.update { it.copy(restartNeeded = false) }
+    }
+
     private fun onBootInstallation(code: Int) {
         val differs = code != installation.code
-        _linkStats.update { it.copy(installationAtBoot = code, restartNeeded = differs) }
+        if (differs) _connectedDevice.value?.address?.let { restartPending += it }
+        _linkStats.update { it.copy(installationAtLinkUp = code, restartNeeded = it.restartNeeded || differs) }
         if (!differs) return
         Log.w(TAG, "Booted with installation 0x%02X, not $installation: saving it, the sensor applies it at its next boot".format(code))
         sendCommands(installation.command, SAVE_CONFIG, READ_INSTALLATION)
@@ -912,6 +927,9 @@ public class ImuSensorManager(private val context: Context) {
      * [ClockCheckResult.aborted] set; the sensor gets the angles back on the next connect.
      */
     public suspend fun runClockCheck(durationMs: Long = 30_000): ClockCheckResult {
+        check(isConnected()) { "Not connected" }
+        // the link-up read must be answered first: its save would also store this check's output-content write
+        withTimeoutOrNull(2_000) { while (bootInstallationPending) delay(50) }
         check(isConnected()) { "Not connected" }
         val collector = clockChecks.begin()
         timestampSizeLogged = false
