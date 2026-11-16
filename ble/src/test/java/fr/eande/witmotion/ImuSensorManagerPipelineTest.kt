@@ -80,6 +80,90 @@ class ImuSensorManagerPipelineTest {
         assertThat(stats.bandwidthCode).isEqualTo(0x02)
     }
 
+    private val saveSequence = listOf("FF AA 69 88 B5", "FF AA 23 00 00", "FF AA 00 00 00", "FF AA 27 23 00")
+
+    private fun bootedWith(code: Int) {
+        h.connect()
+        h.forgetWrites()
+        h.notify(GattHarness.registerReply(0x23, code))
+        h.drain()
+    }
+
+    @Test
+    fun `a vertical boot installation is read first, then saved horizontal`() {
+        h.discoverServices()
+        h.descriptorWritten()
+        h.drain()
+        val connectWrites = h.written.map(::hex)
+        h.forgetWrites()
+        h.notify(GattHarness.registerReply(0x23, 0x01))
+        h.drain()
+
+        assertThat(connectWrites.take(2)).containsExactly("FF AA 69 88 B5", "FF AA 27 23 00").inOrder()
+        assertThat(connectWrites).contains("FF AA 23 00 00")
+        assertThat(h.written.map(::hex)).containsExactlyElementsIn(saveSequence).inOrder()
+        assertThat(h.manager.linkStats.value.installationAtBoot).isEqualTo(1)
+        assertThat(h.manager.linkStats.value.restartNeeded).isTrue()
+    }
+
+    @Test
+    fun `a horizontal boot installation saves nothing`() {
+        bootedWith(0x00)
+
+        assertThat(h.written).isEmpty()
+        assertThat(h.manager.linkStats.value.installationAtBoot).isEqualTo(0)
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
+    }
+
+    @Test
+    fun `an unknown boot installation code counts as different`() {
+        bootedWith(0x07)
+
+        assertThat(h.written.map(::hex)).containsExactlyElementsIn(saveSequence).inOrder()
+        assertThat(h.manager.linkStats.value.installationAtBoot).isEqualTo(7)
+        assertThat(h.manager.linkStats.value.restartNeeded).isTrue()
+    }
+
+    @Test
+    fun `the read back after the settings write never saves`() {
+        bootedWith(0x01)
+        h.forgetWrites()
+
+        h.notify(GattHarness.registerReply(0x23, 0x00))
+        h.notify(GattHarness.registerReply(0x23, 0x01))
+        h.drain()
+
+        assertThat(h.written).isEmpty()
+    }
+
+    @Test
+    fun `a second link-up decides again from its own boot read`() {
+        bootedWith(0x01)
+        assertThat(h.manager.linkStats.value.restartNeeded).isTrue()
+
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+        h.injectGatt()
+        h.connect()
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
+        assertThat(h.manager.linkStats.value.installationAtBoot).isNull()
+        h.forgetWrites()
+        h.notify(GattHarness.registerReply(0x23, 0x00))
+        h.drain()
+
+        assertThat(h.written).isEmpty()
+        assertThat(h.manager.linkStats.value.installationAtBoot).isEqualTo(0)
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
+    }
+
+    @Test
+    fun `a vertical manager keeps a vertical boot installation`() {
+        h.manager.installation = Installation.VERTICAL
+        bootedWith(0x01)
+
+        assertThat(h.written).isEmpty()
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
+    }
+
     @Test
     fun `a battery reply updates the level`() {
         h.connect()
@@ -93,7 +177,7 @@ class ImuSensorManagerPipelineTest {
     fun `discovering the services writes the unlock, the settings and the reads, 100 ms apart`() {
         h.connect()
 
-        val expected = listOf(ImuSensorManager.UNLOCK) +
+        val expected = listOf(ImuSensorManager.UNLOCK, ImuSensorManager.READ_INSTALLATION) +
             ImuSensorManager.settingsCommands(h.manager.outputRate, h.manager.installation, h.manager.algorithm, h.manager.bandwidth) +
             ImuSensorManager.READ_BATTERY
         assertThat(h.written.map(::hex)).containsExactlyElementsIn(expected.map(::hex)).inOrder()

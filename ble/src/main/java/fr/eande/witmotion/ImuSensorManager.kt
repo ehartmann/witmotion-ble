@@ -143,7 +143,15 @@ public class ImuSensorManager(private val context: Context) {
         /** Register 0x1F read back after setting the bandwidth; see [Bandwidth.fromCode]. The protocol does not document this read. */
         val bandwidthCode: Int? = null,
         /** Set on the first rate read-back that differs from [outputRate] (the timestamps are suspect), cleared when a later one matches. */
-        val rateMismatch: Boolean = false
+        val rateMismatch: Boolean = false,
+        /** Register 0x23 as the sensor booted with it, read before the settings were written; null until that reply arrives. */
+        val installationAtBoot: Int? = null,
+        /**
+         * The boot installation differed from [installation] (an unknown code counts as different): it was saved to the
+         * flash, but the sensor only applies it at its next boot, so until then its raw accelerations and rotation rates
+         * follow the old one. False when the boot read matched or has not been answered.
+         */
+        val restartNeeded: Boolean = false
     )
 
     private class Readback(val name: String, val describe: (Int) -> Any?, val store: (Int) -> (LinkStats) -> LinkStats)
@@ -190,6 +198,7 @@ public class ImuSensorManager(private val context: Context) {
     @Volatile private var probedGatt: BluetoothGatt? = null
     @Volatile private var discoveryRetried = false
     @Volatile private var rateRewritten = false
+    @Volatile private var bootInstallationPending = false
     @Volatile private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScan() }
@@ -281,6 +290,7 @@ public class ImuSensorManager(private val context: Context) {
             name = g.device.name ?: "WT9011DCL"
         )
         Log.d(TAG, "Connected to ${g.device.name}")
+        bootInstallationPending = true
         applySettings()
         // Read now, then every minute: the level drains over a long session
         mainHandler.removeCallbacks(batteryRefresh)
@@ -740,6 +750,10 @@ public class ImuSensorManager(private val context: Context) {
             for ((register, readback) in registerReadbacks) {
                 val code = registers.firstOrNull { it.startRegister == register }?.values?.get(0) ?: continue
                 Log.d(TAG, "${readback.name} register: 0x%02X (%s)".format(code, readback.describe(code) ?: "?"))
+                if (register == REG_INSTALLATION && bootInstallationPending) {
+                    bootInstallationPending = false
+                    onBootInstallation(code)
+                }
                 val mismatch = register == REG_OUTPUT_RATE && OutputRate.fromCode(code) != outputRate
                 _linkStats.update { readback.store(code)(it).let { s -> if (register == REG_OUTPUT_RATE) s.copy(rateMismatch = mismatch) else s } }
                 if (mismatch && !rateRewritten) {
@@ -821,7 +835,8 @@ public class ImuSensorManager(private val context: Context) {
     /**
      * How the sensor is mounted, written on every connect and at once when changed while
      * connected: the sensor keeps the last value written, even by another app, so leaving it
-     * unwritten would make the angles depend on that. Not saved to the sensor's flash.
+     * unwritten would make the angles depend on that. Saved to the sensor's flash only when the value read
+     * at link-up differs from this one (see [LinkStats.restartNeeded]); a change while connected is not saved.
      */
     @Volatile
     public var installation: Installation = Installation.HORIZONTAL
@@ -863,12 +878,24 @@ public class ImuSensorManager(private val context: Context) {
     public fun configureBandwidth(): Unit = sendCommands(bandwidth.command, READ_BANDWIDTH)
 
     /**
-     * On connect: [outputRate], [installation], [algorithm] and [bandwidth] under one unlock, all
-     * read back, the output content first: a clock check cut short (app killed, link lost) leaves
+     * On connect: the installation read first (the boot value), then [outputRate], [installation], [algorithm]
+     * and [bandwidth] under one unlock, all read back, the output content first: a clock check cut short (app killed, link lost) leaves
      * the sensor on timestamps, which would otherwise outlive the app.
      */
     private fun applySettings() =
-        sendCommands(*settingsCommands(outputRate, installation, algorithm, bandwidth).toTypedArray())
+        sendCommands(READ_INSTALLATION, *settingsCommands(outputRate, installation, algorithm, bandwidth).toTypedArray())
+
+    /**
+     * The first 0x23 reply of a link answers the read sent before the settings, so it is the installation
+     * the sensor booted with: the sensor answers in order, and the write after it is not applied yet.
+     */
+    private fun onBootInstallation(code: Int) {
+        val differs = code != installation.code
+        _linkStats.update { it.copy(installationAtBoot = code, restartNeeded = differs) }
+        if (!differs) return
+        Log.w(TAG, "Booted with installation 0x%02X, not $installation: saving it, the sensor applies it at its next boot".format(code))
+        sendCommands(installation.command, SAVE_CONFIG, READ_INSTALLATION)
+    }
 
     internal val clockChecks = ClockCheckSlot()
     @Volatile private var timestampSizeLogged = false

@@ -203,6 +203,12 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 
 ## Changelog
 
+### Unreleased
+
+- **Behaviour change:** at every link-up the manager reads the installation register (0x23) before it writes the settings. The sensor applies the installation saved in its flash at boot (in vertical, its raw accelerations and rotation rates are turned a quarter turn about X), and the read-back after the write always matches, so only this read shows the boot state.
+- **Behaviour change:** when the boot value differs from `installation` (an unknown code counts as different), the manager writes `installation`, saves the configuration to the flash and reads the register again, once per link. When it matches, nothing extra is written or saved.
+- **New:** `LinkStats.installationAtBoot` (the code read at boot) and `LinkStats.restartNeeded` (true after such a save: the sensor applies it at its next boot). Both reset at the next link-up.
+
 ### 0.8.2
 
 Fixes three rare connect cases. Public API unchanged: binary-compatible with 0.8.1.
