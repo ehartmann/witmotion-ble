@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("fr.eande.witmotion:archery:0.8.2") // pulls :ble; or fr.eande.witmotion:ble alone
+implementation("fr.eande.witmotion:archery:0.8.3") // pulls :ble; or fr.eande.witmotion:ble alone
 ```
 
 To develop an app against a local checkout instead, add to its `settings.gradle.kts`
@@ -44,12 +44,12 @@ and build with `-Pwitmotion.local`; the included build then needs the same AGP v
 ### Releasing
 
 ```bash
-git tag v0.8.2 && git push origin v0.8.2
+git tag v0.8.3 && git push origin v0.8.3
 ```
 
 The Release workflow runs the unit tests and lint, builds the AARs with that version and creates
 the release, its notes listing the commits since the previous tag. Locally:
-`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.8.2` writes the same
+`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.8.3` writes the same
 files to `build/release-repo/`.
 
 ### API
@@ -202,6 +202,15 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 (as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Changelog
+
+### 0.8.3
+
+Keeps the sensor's saved installation as set: the installation is read at link-up, saved when it differs, and a restart flag tells when the sensor must be switched off and on. Public API: two `LinkStats` fields and `acknowledgeRestart()`, binary-compatible with 0.8.2 otherwise.
+
+- **Behaviour change:** at every link-up the manager reads the installation register (0x23) before it writes the settings. The sensor applies the installation saved in its flash at boot (in vertical, its raw accelerations and rotation rates are turned a quarter turn about X), and the read-back after the write always matches, so only this read shows the boot state.
+- **Behaviour change:** when the boot value differs from `installation` (an unknown code counts as different), the manager writes `installation`, saves the configuration to the flash and reads the register again, once per link. When it matches, nothing extra is written or saved.
+- **New:** `LinkStats.installationAtLinkUp` (register 0x23 read at link-up before the manager writes anything: the boot value, unless something wrote it since the sensor started) and `LinkStats.restartNeeded` (true after such a save: the sensor applies it at its next boot, and its raw accelerations and rotation rates keep the old installation until then). The flag stays true for that sensor address on every later link-up, because the register read is the live one, until the new `acknowledgeRestart()` or the end of the process.
+- **Behaviour change:** `runClockCheck` waits up to 2 s for the link-up read to be answered before it writes anything, so the save cannot store its output-content write.
 
 ### 0.8.2
 
