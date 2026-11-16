@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -125,15 +126,21 @@ class ImuSensorManagerSettingsTest {
     fun `a readInfo waiting on the lock while the link drops returns empty and writes nothing`() = runBlocking<Unit> {
         linkedUp()
         val first = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo(timeoutMs = 300) }
-        val second = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo(timeoutMs = 300) }
+        val second = async(start = CoroutineStart.UNDISPATCHED) { h.manager.readInfo(timeoutMs = 60_000) }
         h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
         h.injectGatt()
         h.forgetWrites()
-
-        assertThat(first.await()).isEqualTo(ImuSensorManager.SensorInfo())
-        val waited = measureTimeMillis { assertThat(second.await()).isEqualTo(ImuSensorManager.SensorInfo()) }
-        assertThat(waited).isLessThan(150)
-        assertThat(h.written).isEmpty()
+        try {
+            assertThat(first.await()).isEqualTo(ImuSensorManager.SensorInfo())
+            repeat(3) { yield() }
+            assertThat(second.isCompleted).isTrue()
+            assertThat(second.await()).isEqualTo(ImuSensorManager.SensorInfo())
+            assertThat(h.written).isEmpty()
+            val pending = ImuSensorManager::class.java.getDeclaredField("pendingInfo").apply { isAccessible = true }.get(h.manager) as Map<*, *>
+            assertThat(pending).isEmpty()
+        } finally {
+            second.cancel()
+        }
     }
 
     @Test   // Review Focus 3
