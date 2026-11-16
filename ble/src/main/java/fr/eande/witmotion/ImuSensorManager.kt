@@ -884,7 +884,8 @@ public class ImuSensorManager(private val context: Context) {
             } finally {
                 entries.forEach { (register, entry) -> pendingInfo.remove(register, entry) }
             }
-            decodeInfo { entries.getValue(it).let { d -> if (d.isCompleted) d.getCompleted() else null } }
+            val replies = entries.mapValues { (_, d) -> if (d.isCompleted) d.await() else null }
+            decodeInfo { replies[it] }
         }
     }
 
