@@ -69,6 +69,7 @@ val info = sensor.readInfo()            // suspend: firmware, temperature, calib
 sensor.saveConfig()                     // suspend: the live registers to flash
 sensor.forceInstallation()              // suspend: installation saved to flash, restartNeeded raised
 sensor.factoryReset()                   // suspend: factory configuration, then the link-up settings again
+sensor.writeName("WT-Arc")              // suspend: the advertised name, taken at the sensor's next boot; see ImuSensorManager.isValidName
 val check = sensor.runClockCheck()      // suspend, 30 s: sensor clock rate, drift against the phone, lost frames
 
 val connector = ImuAutoConnector(sensor, RegisteredImuStore(prefs), scope)
@@ -196,6 +197,8 @@ Each reply carries 8 registers (section 3.1). Not checked on a WT9011DCL.
 
 `factoryReset()` sends `FF AA 00 01 00` (register `0x00` SAVE = 1, « restore the default configuration and save », section 3.3). Then it sends the unlock, the link-up settings and their read-backs again, and re-arms the rate rewrite. It raises no restart flag. Not checked on a WT9011DCL: which registers the default configuration covers (calibration offsets, name), and whether the sensor reboots or drops the link.
 
+`writeName(name)` sends the unlock, then the text `WT` + `name` + `\r\n` (section 3.12): the first `WT` is the protocol header, and the name keeps its own `WT`, without which the library's scans drop the sensor. `isValidName` accepts `WT` followed by 1 to 14 of `A-Z a-z 0-9 _ -` (the manual's 14 changeable bytes), so the command fits one 20-byte write. Not checked on a WT9011DCL: whether the unlock or a save is needed, and when the new name takes effect (expected: at the next boot).
+
 All GATT writes and reads go through `GattOpQueue`: Android rejects an operation
 issued while another one is in flight.
 
@@ -228,6 +231,7 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 - **New:** `readInfo()` and `SensorInfo`: the firmware version, the temperature and the calibration offsets, read on demand (the link-up does not change). A field is null when its reply did not come within the timeout. Not checked on a WT9011DCL.
 - **New:** `saveConfig()` (the current registers to the flash) and `forceInstallation()` (`installation` saved, read back, `restartNeeded` raised until `acknowledgeRestart()`). Both wait for the link-up read, and they return `false` with nothing written while disconnected or during a clock check. Not checked on a WT9011DCL.
 - **New:** `factoryReset()`: the sensor's default configuration, saved, then the link-up settings and read-backs again. It re-arms the rate rewrite and raises no restart flag. Not checked on a WT9011DCL.
+- **New:** `writeName(name)` and `ImuSensorManager.isValidName(name)`. The name is « WT » followed by 1 to 14 letters, digits, `-` or `_`, so the library's scans still see the sensor. It is taken at the sensor's next boot and raises no restart flag. Not checked on a WT9011DCL.
 
 ### 0.8.3
 

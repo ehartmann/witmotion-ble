@@ -2,10 +2,12 @@ package fr.eande.witmotion
 
 import android.bluetooth.BluetoothProfile
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -238,6 +240,52 @@ class ImuSensorManagerSettingsTest {
         linkedUp()
         h.manager.clockChecks.begin()
         assertThat(h.manager.factoryReset()).isFalse()
+        assertThat(h.written).isEmpty()
+    }
+
+    @Test
+    fun `isValidName accepts WT then 1 to 14 letters, digits, - or _`() {
+        val cases = mapOf(
+            "WT" to false, "WTA" to true, "WT-Arc" to true, "WT_9" to true,
+            "WT" + "A".repeat(14) to true, "WT" + "A".repeat(15) to false,
+            "wtA" to false, "WT A" to false, "WTé" to false, "WT\r\n" to false,
+        )
+        cases.forEach { (name, valid) -> assertWithMessage(name).that(ImuSensorManager.isValidName(name)).isEqualTo(valid) }
+    }
+
+    @Test
+    fun `writeName sends WT, the whole name and CR LF after the unlock, and raises no restart flag`() = runBlocking<Unit> {
+        linkedUp()
+        assertThat(h.manager.writeName("WT-Arc")).isTrue()
+        h.drain()
+
+        assertThat(h.written.map(::hex)).containsExactly(unlock, "57 54 57 54 2D 41 72 63 0D 0A").inOrder()
+        assertThat(h.manager.linkStats.value.restartNeeded).isFalse()
+    }
+
+    @Test
+    fun `the longest name is one 20-byte write`() = runBlocking<Unit> {
+        linkedUp()
+        h.manager.writeName("WT" + "A".repeat(14))
+        h.drain()
+
+        assertThat(h.written.last().size).isEqualTo(20)
+    }
+
+    @Test
+    fun `writeName throws on an invalid name and writes nothing`() {
+        linkedUp()
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { h.manager.writeName("WT" + "A".repeat(15)) } }
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { h.manager.writeName("Arc") } }
+        assertThat(h.written).isEmpty()
+    }
+
+    @Test
+    fun `writeName refuses while disconnected and during a clock check`() = runBlocking<Unit> {
+        assertThat(h.manager.writeName("WT-Arc")).isFalse()
+        linkedUp()
+        h.manager.clockChecks.begin()
+        assertThat(h.manager.writeName("WT-Arc")).isFalse()
         assertThat(h.written).isEmpty()
     }
 }

@@ -74,6 +74,11 @@ public class ImuSensorManager(private val context: Context) {
         public fun scanFilters(addresses: Collection<String>): List<ScanFilter> =
             addresses.filter(BluetoothAdapter::checkBluetoothAddress).map { ScanFilter.Builder().setDeviceAddress(it).build() }
 
+        private val NAME_REGEX = Regex("WT[A-Za-z0-9_-]{1,14}")
+
+        /** True for the names [writeName] accepts: "WT" then 1 to 14 of `A-Z a-z 0-9 _ -`, so the scans still see the sensor. */
+        public fun isValidName(name: String): Boolean = NAME_REGEX.matches(name)
+
         private const val TAG = "ImuSensorManager"
         private const val DEVICE_NAME_PREFIX = "WT"
 
@@ -1066,6 +1071,19 @@ public class ImuSensorManager(private val context: Context) {
         if (!readyToWrite()) return false
         enqueuePaced(listOf(UNLOCK, FACTORY_RESET, UNLOCK) + settingsCommands(outputRate, installation, algorithm, bandwidth))
         rateRewritten = false
+        return true
+    }
+
+    /**
+     * Renames the sensor to [name], the whole advertised name, taken at the sensor's next boot. `true` means
+     * queued, not taken: the sensor advertises the name only after a restart. `false`, with nothing written,
+     * while disconnected or during a clock check. Not checked on a WT9011DCL.
+     * @throws IllegalArgumentException if [isValidName] is false for [name]
+     */
+    public suspend fun writeName(name: String): Boolean {
+        require(isValidName(name)) { "Invalid sensor name: $name" }
+        if (!readyToWrite()) return false
+        sendCommands("WT$name\r\n".toByteArray(Charsets.US_ASCII))
         return true
     }
 
