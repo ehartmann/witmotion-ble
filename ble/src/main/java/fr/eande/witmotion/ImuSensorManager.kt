@@ -168,7 +168,7 @@ public class ImuSensorManager(private val context: Context) {
         val installationAtLinkUp: Int? = null,
         /**
          * The manager saved [installation] to the sensor's flash because [installationAtLinkUp] differed (an unknown code
-         * counts as different). The sensor applies it at its next boot: until then its raw accelerations and rotation
+         * counts as different), or [forceInstallation] did. The sensor applies it at its next boot: until then its raw accelerations and rotation
          * rates keep the old installation. A later link-up reads the live register, which already says the new value,
          * so the flag stays true for that sensor address, on every link-up, until [acknowledgeRestart] or the end of
          * the process. A restart is invisible to the manager.
@@ -870,7 +870,8 @@ public class ImuSensorManager(private val context: Context) {
     /**
      * Reads the firmware version, the temperature and the calibration offsets (no unlock), and the battery on the way.
      * A field is null when its reply did not come within [timeoutMs]; a call while disconnected returns at once.
-     * Calls are served one at a time.
+     * Calls are served one at a time. Its reads wait behind writes already queued (at link-up, about 11 to 15
+     * writes), so a call made at connect can return partial nulls within the default timeout.
      */
     public suspend fun readInfo(timeoutMs: Long = 2_000): SensorInfo {
         if (!isConnected()) return SensorInfo()
@@ -1067,7 +1068,8 @@ public class ImuSensorManager(private val context: Context) {
 
     /**
      * Restores the sensor's default configuration and saves it, then sends the link-up settings and their
-     * read-backs again and re-arms the rate rewrite. `true` means queued, not taken. `false`, with nothing
+     * read-backs again and re-arms the rate rewrite. The reset is expected to erase the calibration offsets and
+     * may reboot the sensor or drop the link (not checked). `true` means queued, not taken. `false`, with nothing
      * written, while disconnected or during a clock check. Not checked on a WT9011DCL.
      */
     public suspend fun factoryReset(): Boolean {
@@ -1078,9 +1080,9 @@ public class ImuSensorManager(private val context: Context) {
     }
 
     /**
-     * Renames the sensor to [name], the whole advertised name, taken at the sensor's next boot. `true` means
-     * queued, not taken: the sensor advertises the name only after a restart. `false`, with nothing written,
-     * while disconnected or during a clock check. Not checked on a WT9011DCL.
+     * Renames the sensor to [name], the whole advertised name, expected to take effect at the sensor's next boot.
+     * `true` means queued, not taken. `false`, with nothing written, while disconnected or during a clock check.
+     * Not checked on a WT9011DCL.
      * @throws IllegalArgumentException if [isValidName] is false for [name]
      */
     public suspend fun writeName(name: String): Boolean {
