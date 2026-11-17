@@ -22,7 +22,10 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,6 +74,11 @@ public class ImuSensorManager(private val context: Context) {
         public fun scanFilters(addresses: Collection<String>): List<ScanFilter> =
             addresses.filter(BluetoothAdapter::checkBluetoothAddress).map { ScanFilter.Builder().setDeviceAddress(it).build() }
 
+        private val NAME_REGEX = Regex("WT[A-Za-z0-9_-]{1,14}")
+
+        /** True for the names [writeName] accepts: "WT" then 1 to 14 of `A-Z a-z 0-9 _ -`, so the scans still see the sensor. */
+        public fun isValidName(name: String): Boolean = NAME_REGEX.matches(name)
+
         private const val TAG = "ImuSensorManager"
         private const val DEVICE_NAME_PREFIX = "WT"
 
@@ -94,8 +102,10 @@ public class ImuSensorManager(private val context: Context) {
         // 0x69/0xB588 unlocks config writes; the output rate commands are in OutputRate.
         public val UNLOCK: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x69, 0x88.toByte(), 0xB5.toByte())
         public val SAVE_CONFIG: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x00, 0x00)
+        private val FACTORY_RESET: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x00, 0x01, 0x00)
         // Register read (no unlock needed): the sensor answers with a 55 71 notification
         public val READ_BATTERY: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, ImuDataParser.REG_BATTERY_VOLTAGE.toByte(), 0x00)
+        private val INFO_REGISTERS = listOf(0x2E, 0x40, 0x05, 0x0D)
         private const val REG_OUTPUT_RATE = 0x03
         public val READ_RATE: ByteArray get() = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, REG_OUTPUT_RATE.toByte(), 0x00)
         private const val REG_INSTALLATION = 0x23
@@ -125,6 +135,11 @@ public class ImuSensorManager(private val context: Context) {
     private val _batteryLevel = MutableStateFlow(-1) // -1 = unknown
     public val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
 
+    private val _batteryVolts = MutableStateFlow<Float?>(null)
+
+    /** The battery voltage (register 0x64), null until the first reply; set with [batteryLevel], never reset. */
+    public val batteryVolts: StateFlow<Float?> = _batteryVolts.asStateFlow()
+
     /**
      * Since the last connect: which frame format arrives, how much of the stream is not usable,
      * and the link and rate settings actually in effect (null until reported).
@@ -153,13 +168,34 @@ public class ImuSensorManager(private val context: Context) {
         val installationAtLinkUp: Int? = null,
         /**
          * The manager saved [installation] to the sensor's flash because [installationAtLinkUp] differed (an unknown code
-         * counts as different). The sensor applies it at its next boot: until then its raw accelerations and rotation
+         * counts as different), or [forceInstallation] did. The sensor applies it at its next boot: until then its raw accelerations and rotation
          * rates keep the old installation. A later link-up reads the live register, which already says the new value,
          * so the flag stays true for that sensor address, on every link-up, until [acknowledgeRestart] or the end of
          * the process. A restart is invisible to the manager.
          */
         val restartNeeded: Boolean = false
     )
+
+    /** What [readInfo] got; null where no reply came. */
+    public data class SensorInfo(
+        /** Register 0x2E, unsigned. */
+        val version1: Int? = null,
+        /** Register 0x2F, unsigned. */
+        val version2: Int? = null,
+        /** `version1.(version2 high byte).(version2 low byte)`; null without the 0x2E reply. */
+        val firmware: String? = null,
+        /** Register 0x40, in degrees Celsius. */
+        val temperatureC: Float? = null,
+        /** Registers 0x05-0x07, signed raw. */
+        val accelOffsets: List<Int>? = null,
+        /** Registers 0x08-0x0A, signed raw. */
+        val gyroOffsets: List<Int>? = null,
+        /** Registers 0x0B-0x0D, signed raw; needs both offset replies. */
+        val magOffsets: List<Int>? = null,
+    )
+
+    private val infoLock = Mutex()
+    private val pendingInfo = ConcurrentHashMap<Int, CompletableDeferred<List<Int>>>()
 
     private class Readback(val name: String, val describe: (Int) -> Any?, val store: (Int) -> (LinkStats) -> LinkStats)
 
@@ -453,6 +489,7 @@ public class ImuSensorManager(private val context: Context) {
         stopStreamWatch()
         if (!pending) mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
         clockChecks.abort()
+        pendingInfo.clear()
 
         gatt?.let { old ->
             try {
@@ -564,6 +601,7 @@ public class ImuSensorManager(private val context: Context) {
         stopStreamWatch()
         _connectionState.value = ConnectionState.DISCONNECTED
         clockChecks.abort()
+        pendingInfo.clear()
         _connectedDevice.value = null
         Log.d(TAG, "Disconnected")
     }
@@ -593,7 +631,10 @@ public class ImuSensorManager(private val context: Context) {
                     dropCause = DropCause.LINK_LOST
                     _connectionState.value = ConnectionState.DISCONNECTED
                     // not a late callback from a GATT that connect() already replaced
-                    if (this@ImuSensorManager.gatt.let { it == null || it == gatt }) clockChecks.abort()
+                    if (this@ImuSensorManager.gatt.let { it == null || it == gatt }) {
+                        clockChecks.abort()
+                        pendingInfo.clear()
+                    }
                     _connectedDevice.value = null
                     writeCharacteristic = null
                     gattOps.clear()
@@ -753,8 +794,10 @@ public class ImuSensorManager(private val context: Context) {
             }
             registers.firstOrNull { it.startRegister == ImuDataParser.REG_BATTERY_VOLTAGE }?.let {
                 _batteryLevel.value = ImuDataParser.batteryPercent(it.values[0])
+                _batteryVolts.value = it.values[0] / 100f
                 Log.d(TAG, "Battery: ${it.values[0] / 100f} V, ${_batteryLevel.value}%")
             }
+            registers.forEach { pendingInfo[it.startRegister]?.complete(it.values) }
             for ((register, readback) in registerReadbacks) {
                 val code = registers.firstOrNull { it.startRegister == register }?.values?.get(0) ?: continue
                 Log.d(TAG, "${readback.name} register: 0x%02X (%s)".format(code, readback.describe(code) ?: "?"))
@@ -823,6 +866,48 @@ public class ImuSensorManager(private val context: Context) {
             gattOps.enqueue(g) { sendCommand(command) }
         }
     }
+
+    /**
+     * Reads the firmware version, the temperature and the calibration offsets (no unlock), and the battery on the way.
+     * A field is null when its reply did not come within [timeoutMs]; a call while disconnected returns at once.
+     * Calls are served one at a time. Its reads wait behind writes already queued (at link-up, about 11 to 15
+     * writes), so a call made at connect can return partial nulls within the default timeout.
+     */
+    public suspend fun readInfo(timeoutMs: Long = 2_000): SensorInfo {
+        if (!isConnected()) return SensorInfo()
+        return infoLock.withLock {
+            if (!isConnected()) return@withLock SensorInfo()
+            val entries = INFO_REGISTERS.associateWith { CompletableDeferred<List<Int>>() }
+            pendingInfo.putAll(entries)
+            try {
+                enqueuePaced(INFO_REGISTERS.map(::readRegister) + READ_BATTERY)
+                withTimeoutOrNull(timeoutMs) { entries.values.forEach { it.await() } }
+            } finally {
+                entries.forEach { (register, entry) -> pendingInfo.remove(register, entry) }
+            }
+            val replies = entries.mapValues { (_, d) -> if (d.isCompleted) d.await() else null }
+            decodeInfo { replies[it] }
+        }
+    }
+
+    private fun decodeInfo(reply: (Int) -> List<Int>?): SensorInfo {
+        fun signed(v: Int) = v.toShort().toInt()
+        val version = reply(0x2E)
+        val temperature = reply(0x40)
+        val first = reply(0x05)
+        val mag = reply(0x0D)
+        return SensorInfo(
+            version1 = version?.get(0),
+            version2 = version?.get(1),
+            firmware = version?.let { "${it[0]}.${it[1] ushr 8}.${it[1] and 0xFF}" },
+            temperatureC = temperature?.let { signed(it[0]) / 100f },
+            accelOffsets = first?.let { v -> v.subList(0, 3).map(::signed) },
+            gyroOffsets = first?.let { v -> v.subList(3, 6).map(::signed) },
+            magOffsets = if (first != null && mag != null) listOf(signed(first[6]), signed(first[7]), signed(mag[0])) else null,
+        )
+    }
+
+    private fun readRegister(register: Int) = byteArrayOf(0xFF.toByte(), 0xAA.toByte(), 0x27, register.toByte(), 0x00)
 
     /** The WT9011DCL has no GATT Battery Service: the level comes from register 0x64 (see deliverNotify). */
     private fun readBattery() = enqueuePaced(listOf(READ_BATTERY))
@@ -932,8 +1017,7 @@ public class ImuSensorManager(private val context: Context) {
      */
     public suspend fun runClockCheck(durationMs: Long = 30_000): ClockCheckResult {
         check(isConnected()) { "Not connected" }
-        // the link-up read must be answered first: its save would also store this check's output-content write
-        withTimeoutOrNull(2_000) { while (bootInstallationPending) delay(50) }
+        awaitLinkUpRead()
         check(isConnected()) { "Not connected" }
         val collector = clockChecks.begin()
         timestampSizeLogged = false
@@ -942,6 +1026,70 @@ public class ImuSensorManager(private val context: Context) {
         } finally {
             clockChecks.end(collector)
         }
+    }
+
+    /** The link-up read must be answered first: its save would also store a later write's effect. */
+    private suspend fun awaitLinkUpRead() {
+        withTimeoutOrNull(2_000) { while (bootInstallationPending) delay(50) }
+    }
+
+    /** False while disconnected or during a clock check: a save then would store the timestamp output content. */
+    private suspend fun readyToWrite(): Boolean {
+        fun ok() = isConnected() && clockChecks.collector == null
+        if (!ok()) return false
+        val g = gatt
+        awaitLinkUpRead()
+        return ok() && gatt === g
+    }
+
+    /**
+     * Saves the live registers (rate, bandwidth, algorithm, installation, output content, calibration)
+     * to the sensor's flash. `true` means queued, not taken: the read-backs say what the sensor holds.
+     * `false`, with nothing written, while disconnected or during a clock check.
+     */
+    public suspend fun saveConfig(): Boolean {
+        if (!readyToWrite()) return false
+        sendCommands(SAVE_CONFIG)
+        return true
+    }
+
+    /**
+     * Writes [installation] and saves it to the flash, as the link-up does when the sensor booted with
+     * another one, reads register 0x23 back and raises [LinkStats.restartNeeded] until [acknowledgeRestart].
+     * `true` means queued, not taken. `false`, with nothing written, while disconnected or during a clock check.
+     */
+    public suspend fun forceInstallation(): Boolean {
+        if (!readyToWrite()) return false
+        _connectedDevice.value?.address?.let { restartPending += it }
+        _linkStats.update { it.copy(restartNeeded = true) }
+        sendCommands(installation.command, SAVE_CONFIG, READ_INSTALLATION)
+        return true
+    }
+
+    /**
+     * Restores the sensor's default configuration and saves it, then sends the link-up settings and their
+     * read-backs again and re-arms the rate rewrite. The reset is expected to erase the calibration offsets and
+     * may reboot the sensor or drop the link (not checked). `true` means queued, not taken. `false`, with nothing
+     * written, while disconnected or during a clock check. Not checked on a WT9011DCL.
+     */
+    public suspend fun factoryReset(): Boolean {
+        if (!readyToWrite()) return false
+        enqueuePaced(listOf(UNLOCK, FACTORY_RESET, UNLOCK) + settingsCommands(outputRate, installation, algorithm, bandwidth))
+        rateRewritten = false
+        return true
+    }
+
+    /**
+     * Renames the sensor to [name], the whole advertised name, expected to take effect at the sensor's next boot.
+     * `true` means queued, not taken. `false`, with nothing written, while disconnected or during a clock check.
+     * Not checked on a WT9011DCL.
+     * @throws IllegalArgumentException if [isValidName] is false for [name]
+     */
+    public suspend fun writeName(name: String): Boolean {
+        require(isValidName(name)) { "Invalid sensor name: $name" }
+        if (!readyToWrite()) return false
+        sendCommands("WT$name\r\n".toByteArray(Charsets.US_ASCII))
+        return true
     }
 
     /**

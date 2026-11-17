@@ -110,8 +110,11 @@ internal class GattHarness(val manager: ImuSensorManager = ImuSensorManager(Runt
         /** A 55 61 frame; [roll] in raw units tells the frames apart. */
         fun frame(roll: Int = 0) = byteArrayOf(0x55, 0x61) + ByteArray(12) + int16(roll) + ByteArray(4)
 
-        /** A 55 71 reply to a read of [register]: its value [code], then seven zeros. */
-        fun registerReply(register: Int, code: Int) =
-            byteArrayOf(0x55, 0x71) + int16(register) + int16(code) + ByteArray(14)
+        /** A 55 71 reply to a read of [register]: [values] as int16 from it on, padded with zeros to 8. */
+        fun registerReply(register: Int, vararg values: Int): ByteArray {
+            require(values.size <= 8)
+            return byteArrayOf(0x55, 0x71) + int16(register) + values.fold(ByteArray(0)) { a, v -> a + int16(v) } +
+                ByteArray(2 * (8 - values.size))
+        }
     }
 }
