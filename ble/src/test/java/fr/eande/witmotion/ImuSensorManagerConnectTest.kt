@@ -111,6 +111,32 @@ class ImuSensorManagerConnectTest {
         assertThat(h.manager.cancelPendingConnect()).isFalse()
     }
 
+    @Test fun `connecting to another sensor clears the battery values before any callback of the new link`() {
+        h.manager.connect(device)
+        h.connect()
+        h.notify(GattHarness.registerReply(0x64, 392))
+        assertThat(h.manager.batteryVolts.value).isNotNull()
+
+        h.manager.connect(ImuSensorDevice(address = "3C:A3:08:65:43:21", name = "WT9011DCL"))
+
+        assertThat(h.manager.batteryVolts.value).isNull()
+        assertThat(h.manager.batteryLevel.value).isEqualTo(-1)
+    }
+
+    @Test fun `a late drop of the replaced link leaves the new link's battery values`() {
+        h.manager.connect(device)
+        h.connect()
+        val gattB = io.mockk.mockk<BluetoothGatt>(relaxed = true)
+        h.manager.openGatt = { _, _ -> gattB }
+        h.manager.connect(ImuSensorDevice(address = "3C:A3:08:65:43:21", name = "WT9011DCL"))
+        h.notify(GattHarness.registerReply(0x64, 410))
+
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+
+        assertThat(h.manager.batteryVolts.value).isWithin(1e-4f).of(4.10f)
+        assertThat(h.manager.batteryLevel.value).isEqualTo(100)
+    }
+
     @Test fun `a pending link that came up is not cancelled`() {
         h.manager.connectByAddress(device.address, pending = true)
         h.connect()

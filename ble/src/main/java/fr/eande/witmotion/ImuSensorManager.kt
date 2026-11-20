@@ -132,12 +132,12 @@ public class ImuSensorManager(private val context: Context) {
     private val _connectedDevice = MutableStateFlow<ImuSensorDevice?>(null)
     public val connectedDevice: StateFlow<ImuSensorDevice?> = _connectedDevice.asStateFlow()
 
-    private val _batteryLevel = MutableStateFlow(-1) // -1 = unknown
+    private val _batteryLevel = MutableStateFlow(-1) // -1 = unknown, back to it at a link-up and when the link drops
     public val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
 
     private val _batteryVolts = MutableStateFlow<Float?>(null)
 
-    /** The battery voltage (register 0x64), null until the first reply; set with [batteryLevel], never reset. */
+    /** The battery voltage (register 0x64), null until the first reply; set with [batteryLevel], null again at a link-up and when the link drops. */
     public val batteryVolts: StateFlow<Float?> = _batteryVolts.asStateFlow()
 
     /**
@@ -490,6 +490,7 @@ public class ImuSensorManager(private val context: Context) {
         if (!pending) mainHandler.postDelayed(connectWatchdog, CONNECT_TIMEOUT_MS)
         clockChecks.abort()
         pendingInfo.clear()
+        clearBattery()
 
         gatt?.let { old ->
             try {
@@ -586,6 +587,11 @@ public class ImuSensorManager(private val context: Context) {
         return true
     }
 
+    private fun clearBattery() {
+        _batteryLevel.value = -1
+        _batteryVolts.value = null
+    }
+
     public fun disconnect() {
         connectRequest.incrementAndGet()
         pendingConnect = false
@@ -603,6 +609,7 @@ public class ImuSensorManager(private val context: Context) {
         clockChecks.abort()
         pendingInfo.clear()
         _connectedDevice.value = null
+        clearBattery()
         Log.d(TAG, "Disconnected")
     }
 
@@ -612,6 +619,7 @@ public class ImuSensorManager(private val context: Context) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.d(TAG, "Connected, discovering services...")
                     _linkStats.value = LinkStats(restartNeeded = gatt.device.address in restartPending)
+                    clearBattery()
                     discoveryRetried = false
                     rateRewritten = false
                     streamSeen = false
@@ -634,6 +642,7 @@ public class ImuSensorManager(private val context: Context) {
                     if (this@ImuSensorManager.gatt.let { it == null || it == gatt }) {
                         clockChecks.abort()
                         pendingInfo.clear()
+                        clearBattery()
                     }
                     _connectedDevice.value = null
                     writeCharacteristic = null

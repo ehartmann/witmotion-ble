@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("fr.eande.witmotion:archery:0.9.0") // pulls :ble; or fr.eande.witmotion:ble alone
+implementation("fr.eande.witmotion:archery:0.9.1") // pulls :ble; or fr.eande.witmotion:ble alone
 ```
 
 To develop an app against a local checkout instead, add to its `settings.gradle.kts`
@@ -44,12 +44,12 @@ and build with `-Pwitmotion.local`; the included build then needs the same AGP v
 ### Releasing
 
 ```bash
-git tag v0.9.0 && git push origin v0.9.0
+git tag v0.9.1 && git push origin v0.9.1
 ```
 
 The Release workflow runs the unit tests and lint, builds the AARs with that version and creates
 the release, its notes listing the commits since the previous tag. Locally:
-`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.9.0` writes the same
+`./gradlew publishAllPublicationsToReleaseRepository -PlibVersion=0.9.1` writes the same
 files to `build/release-repo/`.
 
 ### API
@@ -224,6 +224,12 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 (as Nordic's Android-BLE-Library does) and the rate register read back.
 
 ## Changelog
+
+### 0.9.1
+
+Fixes a stale battery value. Public API unchanged.
+
+- **Fix:** `batteryLevel` (back to -1) and `batteryVolts` (back to null) now clear when the link drops, on `disconnect()` and at every link-up, so a new sensor never shows the previous one's battery until its own first reply. Before, they were never reset: after switching sensors the battery line kept the old volts and percentage for 1 to 2 s.
 
 ### 0.9.0
 
