@@ -225,6 +225,12 @@ latency the stack reports through the hidden `BluetoothGattCallback.onConnection
 
 ## Changelog
 
+### 0.9.1
+
+Fixes a stale battery value. Public API unchanged.
+
+- **Fix:** `batteryLevel` (back to -1) and `batteryVolts` (back to null) now clear when the link drops, on `disconnect()` and at every link-up, so a new sensor never shows the previous one's battery until its own first reply. Before, they were never reset: after switching sensors the battery line kept the old volts and percentage for 1 to 2 s.
+
 ### 0.9.0
 
 Adds the sensor info and the actions on the sensor. Public API: `SensorInfo`, `readInfo`, `batteryVolts`, `saveConfig`, `forceInstallation`, `factoryReset`, `writeName`, `isValidName`; binary-compatible with 0.8.3 otherwise. The link-up sequence is unchanged. Not yet checked on hardware: the effect of `forceInstallation`, `factoryReset` (what the default configuration covers, whether the sensor reboots or the link drops), `writeName` (whether the unlock or a save is needed, when the name changes) and the reads of `readInfo` (and the offsets' scale).
