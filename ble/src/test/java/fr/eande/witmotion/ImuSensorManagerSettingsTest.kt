@@ -1,5 +1,6 @@
 package fr.eande.witmotion
 
+import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothProfile
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
@@ -36,6 +37,41 @@ class ImuSensorManagerSettingsTest {
 
         assertThat(h.manager.batteryVolts.value).isWithin(1e-4f).of(3.92f)
         assertThat(h.manager.batteryLevel.value).isEqualTo(75)
+    }
+
+    @Test
+    fun `a drop clears the battery values`() {
+        h.connect()
+        h.notify(GattHarness.registerReply(0x64, 392))
+
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+
+        assertThat(h.manager.batteryVolts.value).isNull()
+        assertThat(h.manager.batteryLevel.value).isEqualTo(-1)
+    }
+
+    @Test
+    fun `disconnect clears the battery values`() {
+        h.connect()
+        h.notify(GattHarness.registerReply(0x64, 392))
+
+        h.manager.disconnect()
+
+        assertThat(h.manager.batteryVolts.value).isNull()
+        assertThat(h.manager.batteryLevel.value).isEqualTo(-1)
+    }
+
+    @Test
+    fun `a link-up to another sensor leaves the battery unknown until its first reading`() {
+        h.connect()
+        h.notify(GattHarness.registerReply(0x64, 392))
+
+        h.manager.gattCallback.onConnectionStateChange(h.gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+
+        assertThat(h.manager.batteryVolts.value).isNull()
+        assertThat(h.manager.batteryLevel.value).isEqualTo(-1)
+        h.notify(GattHarness.registerReply(0x64, 410))
+        assertThat(h.manager.batteryVolts.value).isWithin(1e-4f).of(4.10f)
     }
 
     private val infoReads = listOf("FF AA 27 2E 00", "FF AA 27 40 00", "FF AA 27 05 00", "FF AA 27 0D 00", "FF AA 27 64 00")
